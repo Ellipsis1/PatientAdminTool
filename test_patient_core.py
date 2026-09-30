@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
 import patient_core as core
 
@@ -98,14 +99,17 @@ class PlanAndCopyTests(unittest.TestCase):
 
     def test_names_and_routing(self):
         items = [(self.make("a.stl"), "MD"), (self.make("b.png"), "SCREENSHOT"),
-                 (self.make("notes.pdf"), "KEEP"), (self.make("d.stl"), None)]
+                 (self.make("m.stl"), "MDL_MX"), (self.make("notes.pdf"), "KEEP"),
+                 (self.make("d.stl"), None)]
         plan = core.plan_file_copies(items, case(), self.main)
-        rel = [str(p.relative_to(self.main)) if p else None for p in plan]
+        rel = [[p.relative_to(self.main).as_posix() for p in dests] if dests else None
+               for dests in plan]
         self.assertEqual(rel, [
-            "B658-CGAF STL/B658-CGAF_MD_R_YEL_Chicago.stl",
-            "Design Screenshots/B658-CGAF_R_YEL_Screenshot_01.png",
-            "3D Viewer/B658-CGAF_R_YEL_3DViewer.html",
-            "notes.pdf",
+            ["B658-CGAF STL/B658-CGAF_MD_R_YEL_Chicago.stl"],
+            ["Design Screenshots/B658-CGAF_R_YEL_Screenshot_01.png"],
+            ["B658-CGAF STL/B658-CGAF_MDL_MX_R_YEL_Chicago.stl",       # models go to both
+             "3D Viewer/B658-CGAF_MDL_MX_R_YEL_Chicago.stl"],
+            ["notes.pdf"],
             None,
         ])
 
@@ -119,7 +123,7 @@ class PlanAndCopyTests(unittest.TestCase):
 
         items = [(self.make("a.stl"), "MD"), (self.make("b.stl"), "MD"),
                  (self.make("s1.png"), "SCREENSHOT"), (self.make("s2.png"), "SCREENSHOT")]
-        names = [p.name for p in core.plan_file_copies(items, case(), self.main)]
+        names = [dests[0].name for dests in core.plan_file_copies(items, case(), self.main)]
         self.assertEqual(names, [
             "B658-CGAF_MD_R_YEL_Chicago_02.stl",
             "B658-CGAF_MD_R_YEL_Chicago_03.stl",
@@ -133,7 +137,7 @@ class PlanAndCopyTests(unittest.TestCase):
         plan = core.plan_file_copies([(src, "MX")], case(), self.main)
         core.copy_files(zip([src], plan))
         self.assertTrue(src.exists())
-        self.assertEqual(plan[0].read_text(), "mesh")
+        self.assertEqual(plan[0][0].read_text(), "mesh")
         self.assertEqual((self.main / "CaseNotes.txt").read_text(), "hello")
         for sub in ("3D Viewer", "Design Screenshots", "B658-CGAF STL"):
             self.assertTrue((self.main / sub).is_dir())
@@ -188,9 +192,19 @@ class SharedListsTests(unittest.TestCase):
         self.assertEqual(core.DESIGNERS, ["Zed"])
         self.assertEqual(core.CENTERS, self.saved["centers"])  # invalid value ignored
 
-    def test_no_shortcut_uses_built_in(self):
-        self.assertEqual(core.find_shared_lists(), [])
-        self.assertEqual(core.sync_lists(), (None, None))
+    def test_no_shortcut_uses_bundled_file(self):
+        bundled = self.root / "app" / core.LISTS_FILE
+        bundled.parent.mkdir()
+        bundled.write_text(json.dumps({"version": "b1", "designers": ["Bo"]}), encoding="utf-8")
+        with mock.patch.object(core, "default_lists_path", return_value=bundled):
+            self.assertEqual(core.find_shared_lists(), [])
+            self.assertEqual(core.sync_lists(), (bundled, "b1"))
+        self.assertEqual(core.DESIGNERS, ["Bo"])
+
+    def test_no_lists_anywhere_uses_built_in(self):
+        missing = self.root / "app" / core.LISTS_FILE
+        with mock.patch.object(core, "default_lists_path", return_value=missing):
+            self.assertEqual(core.sync_lists(), (None, None))
         self.assertEqual(core.DESIGNERS, self.saved["designers"])
 
     def test_sync_caches_and_survives_broken_edit(self):

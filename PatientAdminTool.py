@@ -410,8 +410,8 @@ class App:
                 new_name = "(fill in Name & ID and Center)"
             else:
                 new_name = " + ".join(f"{d.parent.name}\\{d.name}" for d in dest)
-                if core.ROLES[f["role"]][2] == core.MAIN_DIR:
-                    new_name = f"(patient folder)\\{dest.name}"
+                if core.ROLES[f["role"]][2] == (core.MAIN_DIR,):
+                    new_name = f"(patient folder)\\{dest[0].name}"
             tags = ("unassigned",) if f["role"] is None else ()
             self.tree.insert("", "end", iid=str(i), values=(f["src"].name, role_text, new_name), tags=tags)
 
