@@ -11,6 +11,7 @@ Keeping this separate from the GUI means it can be unit tested
 (see test_patient_core.py) and reused by other tools later.
 """
 
+import filecmp
 import json
 import os
 import sys
@@ -30,27 +31,9 @@ except Exception:
 # =============================================================================
 # Reference data
 # =============================================================================
-DESIGNERS = ["Adam",
-    "Adrian",
-    "Alex",
-    "Britney",
-    "Brittany",
-    "Carmen",
-    "Charlie",
-    "Henry",
-    "Jackie",
-    "Jeff",
-    "Joe",
-    "Josh",
-    "Lindsey",
-    "Marcee",
-    "Mia",
-    "Michael",
-    "Rachel",
-    "Ricardo",
-    "Steven",
-    "Tori"
-]
+
+# See JSON List
+DESIGNERS = ['TEST DESIGNER']
 
 ARCH_TYPES = ['UAO4 - Try-in', 'UAO4', 'Upper - MxOD', 'Upper - MxCD',
     'Double - MxCD-LAO4', 'Double - MxCD-LOD', 'Double - UOD-LAO4', 'Double - UAO4-LOD',
@@ -68,116 +51,8 @@ SPLIT_OPTIONS = ['No', 'Upper', 'Lower', 'Double']
 YESNO = ['Yes', 'No']
 IOS_BOX = ['IOS', 'Box']
 
-CENTERS = ["Albany",
-    "Albuquerque",
-    "Alexandria",
-    "Atlanta - Alpharetta",
-    "Ann Arbor",
-    "Arden Hills",
-    "Arlington",
-    "Atlanta",
-    "Austin",
-    "Miami - Aventura",
-    "Birmingham",
-    "Brooklyn",
-    "Buffalo",
-    "Chadds Ford",
-    "Chandler",
-    "Chapel Hill - Durham",
-    "Charlotte",
-    "Chicago",
-    "Cincinnati",
-    "Cleveland",
-    "Cleveland - Westlake",
-    "Colorado Springs",
-    "Columbia MD",
-    "Columbia SC (Metro)",
-    "Columbus",
-    "Southfield",
-    "Dallas",
-    "Daly City",
-    "Atlanta - Decatur",
-    "Denver",
-    "Downers Grove",
-    "East Lansing",
-    "Edina",
-    "Edwardsville",
-    "Elk Grove",
-    "Encino",
-    "Federal Way",
-    "Fort Lauderdale",
-    "Fort Myers",
-    "Fort Washington",
-    "Fort Worth",
-    "Framingham",
-    "Fresno",
-    "Garden City",
-    "Grand Rapids",
-    "Greenville",
-    "Harrisburg",
-    "Hartford",
-    "Honolulu",
-    "Houston",
-    "Indianapolis",
-    "Jacksonville",
-    "Kansas City",
-    "Knoxville",
-    "Las Vegas",
-    "Long Island City",
-    "Louisville",
-    "Maitland",
-    "Memphis",
-    "Milwaukee",
-    "Mt Laurel",
-    "Nashville",
-    "New Orleans",
-    "Atlanta - Newnan",
-    "Norfolk",
-    "Northglenn",
-    "Oklahoma City",
-    "Omaha",
-    "Orange County",
-    "Orlando Metro West",
-    "Paramus",
-    "Pensacola",
-    "Phoenix",
-    "Pittsburgh",
-    "Portland",
-    "Providence",
-    "Quincy",
-    "Raleigh",
-    "Richmond",
-    "Riverside",
-    "Rochester",
-    "Rockville",
-    "Roseland",
-    "Sacramento",
-    "Salt Lake",
-    "San Antonio",
-    "San Diego",
-    "San Jose",
-    "San Mateo",
-    "Schaumburg",
-    "Scranton",
-    "Seattle - Bellevue",
-    "Spokane",
-    "St Louis",
-    "St Petersburg",
-    "Tampa",
-    "Torrance",
-    "The Villages",
-    "Charlotte - University City",
-    "Vancouver WA",
-    "Walnut Creek",
-    "Tysons Corner",
-    "West Covina",
-    "West Palm Beach",
-    "White Marsh",
-    "White Plains",
-    "Woburn",
-    "Woodbridge",
-    "Woodlands"
-]
+# See JSON list
+CENTERS = ['TEST CENTER']
 
 ID_RE = re.compile(r"[A-Za-z0-9]{4}-[A-Za-z0-9]{4}")
 DESKTOP = Path.home() / "Desktop"
@@ -545,6 +420,22 @@ def plan_file_copies(items, d, main_folder=None):
         taken.update(dests)
         results.append(dests)
     return results
+
+
+def plan_rx_copy(pdf, main_folder):
+    """Where the Rx PDF will be copied: the patient folder, beside CaseNotes.txt, original name.
+
+    Returns a list of destinations like plan_file_copies does. It is empty when
+    that exact file is already there (Create was clicked again for the same
+    case); a different file with the same name gets _02, _03, ... instead.
+    """
+    src, main = Path(pdf), Path(main_folder)
+    dest, n = main / src.name, 2
+    while dest.exists():
+        if filecmp.cmp(src, dest, shallow=False):
+            return []
+        dest, n = main / f"{src.stem}_{n:02d}{src.suffix}", n + 1
+    return [dest]
 
 
 # =============================================================================

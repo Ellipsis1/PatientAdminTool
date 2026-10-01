@@ -11,3 +11,6 @@ venv/
 .idea/shelf/
 .idea/tasks.xml
 .idea/dictionaries/
+
+# Designer / center lists stay out of the repo (keep a local copy beside the app)
+lists.json

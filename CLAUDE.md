@@ -15,7 +15,7 @@ python -m unittest test_patient_core.DateTests.test_formats   # single test
 
 `pdfplumber` and `tkinterdnd2` are optional at runtime: imports are guarded (`core.PDF_AVAILABLE`, `DND_AVAILABLE`) and the GUI degrades to click-to-browse / manual entry. Keep new optional deps behind the same pattern.
 
-The app is distributed as a PyInstaller exe; `core.app_dir()` resolves to the exe's folder when frozen, and the bundled `lists.json` is expected next to it.
+The app is distributed as a PyInstaller exe; `core.app_dir()` resolves to the exe's folder when frozen, and the bundled `lists.json` is expected next to it. `lists.json` is gitignored (the designer and center lists are kept out of the repo), so a fresh clone has none and the lists in `patient_core.py` are placeholders.
 
 ## Architecture
 
@@ -24,7 +24,7 @@ Two modules, strict split:
 - `patient_core.py` — all logic, no GUI imports. Unit tested by `test_patient_core.py`.
 - `PatientAdminTool.py` — the Tk window only (`App` class). It collects form values into a plain dict `d` (keys: `name_id, center, designer, arch_type, tooth_shade, stl_only, split_file, cutback, ios_box, scan_date, rx_date, due_date, surgery_date`) and passes it to core functions. New logic belongs in core, not the GUI.
 
-Workflow the code implements: Rx PDF → pre-filled form → CaseNotes.txt + patient folder on the Desktop → case files copied (never moved) into subfolders with standardized names.
+Workflow the code implements: Rx PDF → pre-filled form → CaseNotes.txt + patient folder on the Desktop (the Rx PDF is copied in beside CaseNotes.txt, original name, via `plan_rx_copy()`) → case files copied (never moved) into subfolders with standardized names.
 
 ### Key invariants
 

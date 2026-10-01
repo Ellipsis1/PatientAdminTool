@@ -142,6 +142,17 @@ class PlanAndCopyTests(unittest.TestCase):
         for sub in ("3D Viewer", "Design Screenshots", "B658-CGAF STL"):
             self.assertTrue((self.main / sub).is_dir())
 
+    def test_rx_pdf_goes_beside_casenotes(self):
+        rx = self.make("Lab Rx.pdf", "rx")
+        core.create_folder_structure(self.main, "B658-CGAF", notes="hello")
+        plan = core.plan_rx_copy(rx, self.main)
+        self.assertEqual(plan, [self.main / "Lab Rx.pdf"])
+        core.copy_files([(rx, plan)])
+        self.assertTrue(rx.exists())                              # copied, not moved
+        self.assertEqual(core.plan_rx_copy(rx, self.main), [])    # same file again: nothing to do
+        rx.write_text("revised rx")
+        self.assertEqual(core.plan_rx_copy(rx, self.main), [self.main / "Lab Rx_02.pdf"])
+
     def test_safe_name_strips_windows_chars(self):
         self.assertEqual(core.safe_name('a<b>:c"d?e*'), "abcde")
 

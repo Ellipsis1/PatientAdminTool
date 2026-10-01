@@ -6,6 +6,7 @@ Patient Folder & Case Notes Creator
 3. Drop case files (STLs, DCMs, screenshots, 3D viewer). Each gets a role,
    which decides its new name and subfolder. Check the "New name" column.
 4. Click "Create Folder + Notes + Files". Files are copied, never moved.
+   The Rx PDF is copied into the patient folder next to CaseNotes.txt.
 
 All logic lives in patient_core.py; this file is only the window.
 
@@ -41,6 +42,7 @@ class App:
         self.vars = {}
         self.combos = {}
         self.files = []  # each: {"src": Path, "role": role key or None}
+        self.rx_pdf = None  # the loaded Rx PDF, copied into the patient folder on Create
         self.settings = core.load_settings()
         # Load shared lists before building the form so the dropdowns start current.
         self.lists_source, self.lists_version = core.sync_lists()
@@ -346,6 +348,8 @@ class App:
         except Exception as e:
             messagebox.showerror("Error reading PDF", str(e))
             return
+        self.rx_pdf = path
+        self.pdf_zone.config(text=f"Loaded: {path.name}   (click or drop to load a different PDF)")
         if not data:
             messagebox.showwarning("Nothing found",
                                    "Couldn't read any case details from that PDF.\n"
@@ -358,7 +362,6 @@ class App:
             if data.get(key):
                 self.vars[key].set(data[key])
         self.pot_label.config(text=data.get("plan_of_treatment", "(not found in PDF)"))
-        self.pdf_zone.config(text=f"Loaded: {path.name}   (click or drop to load a different PDF)")
         self.update_preview()
 
     # ------------------------------------------------------------------ case files
@@ -480,7 +483,10 @@ class App:
                                  "Pick a role for these files (or remove them):\n- "
                                  + "\n- ".join(unassigned))
             return
-        missing = [f["src"].name for f in self.files if not f["src"].exists()]
+        # The Rx PDF goes in beside CaseNotes.txt, unless it's already in the file list.
+        rx = self.rx_pdf if self.rx_pdf not in [f["src"] for f in self.files] else None
+        missing = [p.name for p in [f["src"] for f in self.files] + ([rx] if rx else [])
+                   if not p.exists()]
         if missing:
             messagebox.showerror("Files not found",
                                  "These files were moved or deleted since you added them:\n- "
@@ -497,6 +503,8 @@ class App:
         try:
             core.create_folder_structure(main, core.patient_from(d["name_id"], d["center"]).uid,
                                          notes=core.build_casenotes(d))
+            if rx:
+                core.copy_files([(rx, core.plan_rx_copy(rx, main))])
             plan = core.plan_file_copies([(f["src"], f["role"]) for f in self.files], d, main)
             copied = core.copy_files(list(zip([f["src"] for f in self.files], plan)))
         except Exception as e:
@@ -505,7 +513,8 @@ class App:
             return
 
         self._remember(d)
-        messagebox.showinfo("Done", f"Folder ready with CaseNotes.txt and {len(copied)} file(s):\n\n{main}")
+        contents = "CaseNotes.txt, the Rx PDF" if rx else "CaseNotes.txt"
+        messagebox.showinfo("Done", f"Folder ready with {contents} and {len(copied)} file(s):\n\n{main}")
         self.clear_files()
 
     def new_case(self):
@@ -513,6 +522,7 @@ class App:
             return
         self._set_defaults()
         self.files.clear()
+        self.rx_pdf = None
         self.pot_label.config(text="(from Rx PDF)")
         self.pdf_zone.config(text=self._pdf_zone_text())
         self.update_preview()
