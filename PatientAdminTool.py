@@ -32,6 +32,65 @@ DATE_FIELDS = ("scan_date", "rx_date", "due_date", "surgery_date")
 UNASSIGNED = "(choose a role)"
 
 
+class DatePicker(tk.Toplevel):
+    """Small month calendar that pops up under a date field. Calls on_pick(date) and closes."""
+
+    def __init__(self, parent, anchor, initial, on_pick):
+        super().__init__(parent)
+        self.title("Pick a date")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.on_pick = on_pick
+        self.selected = initial
+        start = initial or date.today()
+        self.year, self.month = start.year, start.month
+
+        head = tk.Frame(self)
+        head.pack(fill="x", padx=6, pady=(6, 2))
+        tk.Button(head, text="◀", width=3, command=lambda: self._shift(-1)).pack(side="left")
+        tk.Button(head, text="▶", width=3, command=lambda: self._shift(1)).pack(side="right")
+        self.month_label = tk.Label(head, font=("Arial", 10, "bold"))
+        self.month_label.pack(side="left", expand=True)
+
+        self.grid_frame = tk.Frame(self)
+        self.grid_frame.pack(padx=6)
+        tk.Button(self, text="Today", font=("Arial", 8),
+                  command=lambda: self._pick(date.today())).pack(pady=6)
+        self._draw()
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.geometry(f"+{anchor.winfo_rootx()}+{anchor.winfo_rooty() + anchor.winfo_height()}")
+        self.grab_set()
+        self.focus_set()
+
+    def _shift(self, delta):
+        self.year, self.month = core.shift_month(self.year, self.month, delta)
+        self._draw()
+
+    def _draw(self):
+        for w in self.grid_frame.winfo_children():
+            w.destroy()
+        self.month_label.config(text=date(self.year, self.month, 1).strftime("%B %Y"))
+        for c, name in enumerate(("Su", "Mo", "Tu", "We", "Th", "Fr", "Sa")):
+            tk.Label(self.grid_frame, text=name, font=("Arial", 8), fg="#555555").grid(row=0, column=c)
+        for r, week in enumerate(core.month_weeks(self.year, self.month), start=1):
+            for c, day in enumerate(week):
+                if not day:
+                    continue
+                d = date(self.year, self.month, day)
+                b = tk.Button(self.grid_frame, text=str(day), width=3, relief="flat",
+                              command=lambda d=d: self._pick(d))
+                if d == self.selected:
+                    b.config(bg="#1565C0", fg="white")
+                elif d == date.today():
+                    b.config(bg="#BBDEFB")
+                b.grid(row=r, column=c, padx=1, pady=1)
+
+    def _pick(self, d):
+        self.destroy()
+        self.on_pick(d)
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -44,8 +103,8 @@ class App:
         self.files = []  # each: {"src": Path, "role": role key or None}
         self.rx_pdf = None  # the loaded Rx PDF, copied into the patient folder on Create
         self.settings = core.load_settings()
-        # Load shared lists before building the form so the dropdowns start current.
-        self.lists_source, self.lists_version = core.sync_lists()
+        # Load lists.json before building the form so the dropdowns start current.
+        self.lists_source, self.lists_version = core.load_lists()
         self._update_title()
 
         self._build_menu()
@@ -57,9 +116,6 @@ class App:
         self._build_files_panel()
         self._build_action_bar()
         self.update_preview()
-        # After the window appears, tell users who haven't added the OneDrive shortcut.
-        if not core.find_shared_lists():
-            root.after(300, self._warn_missing_lists)
 
     # ------------------------------------------------------------------ layout
     def _build_menu(self):
@@ -112,6 +168,13 @@ class App:
             e.grid(row=r, column=1, sticky="w", padx=8, pady=3)
             e.bind("<KeyRelease>", lambda ev: self.update_preview())
             self.vars[key] = v
+            return e
+
+        def date_entry(r, text, key):
+            e = entry(r, text, key)
+            e.bind("<Double-Button-1>", lambda ev: self._pick_date(key, e))
+            tk.Button(form, text="📅", font=("Segoe UI Emoji", 8),
+                      command=lambda: self._pick_date(key, e)).grid(row=r, column=2, sticky="w")
 
         entry(0, "Name & ID:", "name_id")
         combo(1, "Center:", "center", core.CENTERS)
@@ -122,24 +185,24 @@ class App:
         combo(6, "Split File?:", "split_file", core.SPLIT_OPTIONS)
         combo(7, "Cutback?:", "cutback", core.YESNO)
         combo(8, "IOS or Box?:", "ios_box", core.IOS_BOX)
-        entry(9, "Scan Date (mm/dd/yyyy):", "scan_date")
-        entry(10, "Rx Date (mm/dd/yyyy):", "rx_date")
-        entry(11, "Due by Date (mm/dd/yyyy):", "due_date")
-        entry(12, "Surgery Date (mm/dd/yyyy):", "surgery_date")
+        date_entry(9, "Scan Date (mm/dd/yyyy):", "scan_date")
+        date_entry(10, "Rx Date (mm/dd/yyyy):", "rx_date")
+        date_entry(11, "Due by Date (mm/dd/yyyy):", "due_date")
+        date_entry(12, "Surgery Date (mm/dd/yyyy):", "surgery_date")
 
         tk.Button(form, text="Today", font=("Arial", 8),
-                  command=lambda: self._set_today("scan_date")).grid(row=9, column=2, sticky="w")
+                  command=lambda: self._set_today("scan_date")).grid(row=9, column=3, sticky="w", padx=(4, 0))
         tk.Button(form, text="Today", font=("Arial", 8),
-                  command=lambda: self._set_today("rx_date")).grid(row=10, column=2, sticky="w")
+                  command=lambda: self._set_today("rx_date")).grid(row=10, column=3, sticky="w", padx=(4, 0))
 
         label(13, "Plan of Treatment:")
         self.pot_label = tk.Label(form, text="(from Rx PDF)", font=("Arial", 9, "italic"),
                                   fg="#555555", wraplength=220, justify="left")
-        self.pot_label.grid(row=13, column=1, columnspan=2, sticky="w", padx=8, pady=3)
+        self.pot_label.grid(row=13, column=1, columnspan=3, sticky="w", padx=8, pady=3)
 
         self.folder_label = tk.Label(form, text="", font=("Consolas", 9), fg="#1565C0",
                                      wraplength=330, justify="left")
-        self.folder_label.grid(row=14, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        self.folder_label.grid(row=14, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         self._set_defaults()
 
@@ -207,26 +270,21 @@ class App:
         tk.Button(bar, text="New Case", command=self.new_case,
                   font=("Arial", 10), padx=10, pady=6).pack(side="left")
 
-    # ------------------------------------------------------------------ shared lists
+    # ------------------------------------------------------------------ lists
     def _update_title(self):
         suffix = f"lists {self.lists_version}" if self.lists_source else "built-in lists"
         self.root.title(f"Patient Admin Tool  ({suffix})")
 
-    def _warn_missing_lists(self):
-        messagebox.showwarning(
-            "Shared lists not found",
-            "Designer and center lists may be out of date.\n\n"
-            f"In SharePoint, open the {core.SHARED_FOLDER} folder and click\n"
-            "'Add shortcut to My files', then restart this app.")
-
     def reload_lists(self):
-        self.lists_source, self.lists_version = core.sync_lists()
+        self.lists_source, self.lists_version = core.load_lists()
         for key, values in (("designer", core.DESIGNERS), ("center", core.CENTERS),
                             ("tooth_shade", core.TOOTH_SHADES)):
             self.combos[key].config(values=values)
         self._update_title()
-        if not core.find_shared_lists():
-            self._warn_missing_lists()
+        if not self.lists_source:
+            messagebox.showwarning("Lists not found",
+                                   f"Couldn't read {core.LISTS_FILE} next to the app:\n"
+                                   f"{core.default_lists_path()}")
             return
         messagebox.showinfo("Lists reloaded", f"Using lists version {self.lists_version}.")
 
@@ -261,9 +319,18 @@ class App:
             self.settings["designer"] = d["designer"]
             core.save_settings(self.settings)
 
-    def _set_today(self, key):
-        self.vars[key].set(date.today().strftime("%m/%d/%Y"))
+    def _set_date(self, key, d):
+        self.vars[key].set(d.strftime("%m/%d/%Y"))
         self.update_preview()
+
+    def _set_today(self, key):
+        self._set_date(key, date.today())
+
+    def _pick_date(self, key, anchor):
+        """Open the calendar under a date field, starting on the date already typed there."""
+        DatePicker(self.root, anchor, core.parse_date(self.vars[key].get().strip()),
+                   lambda d: self._set_date(key, d))
+        return "break"   # a double-click shouldn't also select text behind the popup
 
     def _collect(self):
         d = {k: v.get().strip() for k, v in self.vars.items()}
@@ -304,8 +371,7 @@ class App:
     def update_preview(self, event=None):
         d = self._collect()
         if not core.ID_RE.search(d.get("name_id", "")):
-            text = ("Drop an Rx PDF, or enter a Name & ID (e.g. 'R. Yel B658-CGAF'),\n"
-                    "to see the CaseNotes preview.")
+            text = "Drop or browse for an Rx PDF above to see the CaseNotes preview."
             self.folder_label.config(text="")
         else:
             try:

@@ -1,7 +1,6 @@
 """Unit tests for patient_core. Run with:  python -m unittest -v"""
 
 import json
-import os
 import tempfile
 import unittest
 from datetime import date
@@ -29,6 +28,13 @@ class DateTests(unittest.TestCase):
     def test_invalid(self):
         self.assertIsNone(core.parse_date("13/45/2026"))
         self.assertIsNone(core.parse_date("next tuesday"))
+
+    def test_month_grid_for_date_picker(self):
+        weeks = core.month_weeks(2026, 10)                # Oct 1, 2026 is a Thursday
+        self.assertEqual(weeks[0], [0, 0, 0, 0, 1, 2, 3])  # Sunday first
+        self.assertEqual(weeks[-1], [25, 26, 27, 28, 29, 30, 31])
+        self.assertEqual(core.shift_month(2026, 12, 1), (2027, 1))
+        self.assertEqual(core.shift_month(2026, 1, -1), (2025, 12))
 
 
 class NamingTests(unittest.TestCase):
@@ -168,65 +174,43 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(core.load_settings(path), {})          # corrupt file
 
 
-class SharedListsTests(unittest.TestCase):
+class ListsTests(unittest.TestCase):
     """apply_lists mutates module lists, so snapshot and restore them around each test."""
 
     def setUp(self):
         self.saved = {k: list(v) for k, v in core._EDITABLE.items()}
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        self.env = {k: os.environ.get(k) for k in ("APPDATA", "OneDriveCommercial")}
-        os.environ["APPDATA"] = str(self.root / "AppData")
-        os.environ["OneDriveCommercial"] = str(self.root / "OneDrive")
+        self.path = Path(self.tmp.name) / core.LISTS_FILE
 
     def tearDown(self):
         for k, v in self.saved.items():
             core._EDITABLE[k][:] = v
-        for k, v in self.env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
         self.tmp.cleanup()
 
-    def shared(self, text):
-        p = self.root / "OneDrive" / core.SHARED_FOLDER / core.LISTS_FILE
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(text, encoding="utf-8")
-        return p
+    def write(self, text):
+        self.path.write_text(text, encoding="utf-8")
+        return self.path
 
     def test_apply_updates_in_place_and_ignores_bad_keys(self):
         ref = core.DESIGNERS
-        p = self.shared(json.dumps({"version": "v2", "designers": ["Zed"], "centers": "nope"}))
+        p = self.write(json.dumps({"version": "v2", "designers": ["Zed"], "centers": "nope"}))
         self.assertEqual(core.apply_lists([p]), (p, "v2"))
         self.assertIs(core.DESIGNERS, ref)              # same object, new contents
         self.assertEqual(core.DESIGNERS, ["Zed"])
         self.assertEqual(core.CENTERS, self.saved["centers"])  # invalid value ignored
 
-    def test_no_shortcut_uses_bundled_file(self):
-        bundled = self.root / "app" / core.LISTS_FILE
-        bundled.parent.mkdir()
-        bundled.write_text(json.dumps({"version": "b1", "designers": ["Bo"]}), encoding="utf-8")
-        with mock.patch.object(core, "default_lists_path", return_value=bundled):
-            self.assertEqual(core.find_shared_lists(), [])
-            self.assertEqual(core.sync_lists(), (bundled, "b1"))
+    def test_load_uses_file_beside_app(self):
+        p = self.write(json.dumps({"version": "b1", "designers": ["Bo"]}))
+        with mock.patch.object(core, "default_lists_path", return_value=p):
+            self.assertEqual(core.load_lists(), (p, "b1"))
         self.assertEqual(core.DESIGNERS, ["Bo"])
 
-    def test_no_lists_anywhere_uses_built_in(self):
-        missing = self.root / "app" / core.LISTS_FILE
-        with mock.patch.object(core, "default_lists_path", return_value=missing):
-            self.assertEqual(core.sync_lists(), (None, None))
+    def test_missing_or_broken_file_uses_built_in(self):
+        with mock.patch.object(core, "default_lists_path", return_value=self.path):
+            self.assertEqual(core.load_lists(), (None, None))    # no file
+            self.write("{broken json")
+            self.assertEqual(core.load_lists(), (None, None))
         self.assertEqual(core.DESIGNERS, self.saved["designers"])
-
-    def test_sync_caches_and_survives_broken_edit(self):
-        self.shared(json.dumps({"version": "v1", "designers": ["Ann"]}))
-        src, ver = core.sync_lists()
-        self.assertEqual(ver, "v1")
-        self.assertEqual(src, core.settings_path().parent / core.LISTS_FILE)
-
-        self.shared("{broken json")                     # bad edit on SharePoint
-        self.assertEqual(core.sync_lists()[1], "v1")     # last good cache still used
-        self.assertEqual(core.DESIGNERS, ["Ann"])
 
 
 if __name__ == "__main__":

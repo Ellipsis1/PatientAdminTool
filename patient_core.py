@@ -11,6 +11,7 @@ Keeping this separate from the GUI means it can be unit tested
 (see test_patient_core.py) and reused by other tools later.
 """
 
+import calendar
 import filecmp
 import json
 import os
@@ -93,6 +94,17 @@ def fmt_date(value, sep="/"):
     if sep == ".":
         return f"{d.month}.{d.day}.{d.year}"
     return f"{d.month}/{d.day:02d}/{d.year}"
+
+
+def month_weeks(year, month):
+    """Day numbers of a month as Sunday-first weeks, for the date picker. 0 = outside the month."""
+    return calendar.Calendar(firstweekday=6).monthdayscalendar(year, month)
+
+
+def shift_month(year, month, delta):
+    """(year, month) moved forward or back by delta months."""
+    y, m = divmod(year * 12 + month - 1 + delta, 12)
+    return y, m + 1
 
 
 # =============================================================================
@@ -469,9 +481,8 @@ def save_settings(data, path=None):
 
 
 # =============================================================================
-# Shared dropdown lists (lists.json via a OneDrive "Add shortcut to My files")
+# Dropdown lists (lists.json beside the app)
 # =============================================================================
-SHARED_FOLDER = "PatientAdminTool"
 LISTS_FILE = "lists.json"
 
 # Only these lists are editable from the JSON. Arch types stay in code because the
@@ -488,12 +499,6 @@ def app_dir():
 
 def default_lists_path():
     return app_dir() / LISTS_FILE
-
-def find_shared_lists():
-    """The synced lists.json, if this machine has the OneDrive shortcut. [] otherwise."""
-    od = os.environ.get("OneDriveCommercial")
-    p = Path(od) / SHARED_FOLDER / LISTS_FILE if od else None
-    return [p] if p and p.is_file() else []
 
 
 def apply_lists(paths):
@@ -518,26 +523,9 @@ def apply_lists(paths):
     return None, None
 
 
-def sync_lists():
-    """Copy the synced lists.json into a local cache (if it is valid), then apply the cache.
-
-    The cache keeps the last good lists available offline, and a broken edit
-    on SharePoint never replaces a working copy.
-    """
-    cache = settings_path().parent / LISTS_FILE
-    for src in find_shared_lists():
-        try:
-            raw = src.read_text(encoding="utf-8")
-            if not isinstance(json.loads(raw), dict):
-                continue
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            cache.write_text(raw, encoding="utf-8")
-            break
-        except (OSError, ValueError):
-            continue
-    result = apply_lists([default_lists_path()])
-    cached = apply_lists([cache])
-    return cached if cached[0] else result
+def load_lists():
+    """Apply the lists.json that sits beside the app. (None, None) if it is missing or unreadable."""
+    return apply_lists([default_lists_path()])
 
 
 # =============================================================================

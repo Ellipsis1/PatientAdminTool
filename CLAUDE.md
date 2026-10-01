@@ -36,6 +36,6 @@ Workflow the code implements: Rx PDF → pre-filled form → CaseNotes.txt + pat
 
 ### Dropdown lists (`lists.json`)
 
-`designers`, `centers`, and `tooth_shades` can be overridden from JSON. Sources, in priority order: local cache at `%APPDATA%\PatientAdminTool\lists.json` (refreshed from the OneDrive/SharePoint shortcut at `%OneDriveCommercial%\PatientAdminTool\lists.json` if present and valid), then the `lists.json` beside the app, then the hard-coded lists in `patient_core.py`. `apply_lists()` mutates the module-level lists **in place** (`target[:] = new`) because the GUI and `parse_rx_pdf` hold references to them — never rebind these names. Bump `version` in `lists.json` when editing it; it's shown in the window title.
+`designers`, `centers`, and `tooth_shades` can be overridden from JSON. The only source is the `lists.json` beside the app (`load_lists()`); if it is missing or unreadable the placeholder lists in `patient_core.py` stay in effect and the title shows "built-in lists". File → Reload Lists re-reads it. `apply_lists()` mutates the module-level lists **in place** (`target[:] = new`) because the GUI and `parse_rx_pdf` hold references to them — never rebind these names. Bump `version` in `lists.json` when editing it; it's shown in the window title.
 
 Per-user settings (last designer) live in `%APPDATA%\PatientAdminTool\settings.json`; save failures are deliberately swallowed.
