@@ -18,6 +18,10 @@ Finishing a case:
 5. Click "Create Folder + Notes + Files" for the dated patient folder.
    Case files and the Rx PDF are copied in. It gets a new CaseNotes holding
    only the case information (no file-naming examples).
+6. For a revision, save the new files in a "Revision 1" subfolder of the
+   working folder (or mark their names "... Rev 1") and repeat 4 and 5.
+   3D Viewer and Design Screenshots then get an "Initial Design" and a
+   "Revision 1" subfolder. Files already in the patient folder are skipped.
 
 Steps 1, 2 and 5 on their own still make everything in one go.
 
@@ -43,6 +47,7 @@ except Exception:
 
 DATE_FIELDS = ("scan_date", "rx_date", "due_date", "surgery_date")
 UNASSIGNED = "(choose a role)"
+STAGE_NAMES = [core.stage_name(n) for n in range(core.MAX_STAGE + 1)]
 
 
 class DatePicker(tk.Toplevel):
@@ -244,12 +249,13 @@ class App:
 
         table = tk.Frame(frame)
         table.pack(fill="both", expand=True)
-        cols = ("original", "role", "new_name")
+        cols = ("original", "stage", "role", "new_name")
         self.tree = ttk.Treeview(table, columns=cols, show="headings", height=7,
                                  selectmode="extended")
-        for col, text, width in (("original", "Original file", 260),
-                                 ("role", "Role", 170),
-                                 ("new_name", "New name (subfolder\\file)", 560)):
+        for col, text, width in (("original", "Original file", 240),
+                                 ("stage", "Design", 100),
+                                 ("role", "Role", 160),
+                                 ("new_name", "New name (subfolder\\file)", 490)):
             self.tree.heading(col, text=text)
             self.tree.column(col, width=width, anchor="w")
         self.tree.tag_configure("unassigned", foreground="#C62828")
@@ -267,6 +273,12 @@ class App:
                                state="readonly", width=24)
         role_cb.pack(side="left", padx=6)
         role_cb.bind("<<ComboboxSelected>>", self.apply_role)
+        tk.Label(controls, text="Design:", font=("Arial", 9)).pack(side="left", padx=(6, 0))
+        self.stage_var = tk.StringVar()
+        stage_cb = ttk.Combobox(controls, textvariable=self.stage_var, values=STAGE_NAMES,
+                                state="readonly", width=14)
+        stage_cb.pack(side="left", padx=6)
+        stage_cb.bind("<<ComboboxSelected>>", self.apply_stage)
         tk.Button(controls, text="Remove Selected", command=self.remove_selected).pack(side="left", padx=4)
         tk.Button(controls, text="Clear All", command=self.clear_files).pack(side="left", padx=4)
 
@@ -504,6 +516,8 @@ class App:
 
     def add_files(self, paths):
         arch = self.vars["arch_type"].get().strip()
+        # Revision folders are read relative to the working folder, when there is one.
+        base = self.notes_file.parent if self.notes_file else None
         known = {f["src"] for f in self.files}
         skipped = []
         for p in paths:
@@ -512,7 +526,8 @@ class App:
                 continue
             if p in known:
                 continue
-            self.files.append({"src": p, "role": core.guess_role(p, arch)})
+            self.files.append({"src": p, "role": core.guess_role(p, arch),
+                               "stage": core.file_stage(p, base)})
             known.add(p)
         if skipped:
             messagebox.showinfo("Folders skipped",
@@ -529,10 +544,11 @@ class App:
             if f["role"] is None:
                 f["role"] = core.guess_role(f["src"], d.get("arch_type", ""))
 
-        plan = [None] * len(self.files)
+        plan, main = [None] * len(self.files), None
         if self._names_ready(d):
             main = self._main_folder(d) if not self._problems(d) else None
-            plan = core.plan_file_copies([(f["src"], f["role"]) for f in self.files], d, main)
+            plan = core.plan_file_copies([(f["src"], f["role"]) for f in self.files], d, main,
+                                         [f["stage"] for f in self.files])
 
         for i, (f, dest) in enumerate(zip(self.files, plan)):
             role_text = core.ROLES[f["role"]][0] if f["role"] else UNASSIGNED
@@ -540,12 +556,15 @@ class App:
                 new_name = "Pick a role below"
             elif dest is None:
                 new_name = "(fill in Name & ID and Center)"
+            elif not dest:
+                new_name = "(already in the folder)"
+            elif core.ROLES[f["role"]][2] == (core.MAIN_DIR,):
+                new_name = f"(patient folder)\\{dest[0].name}"
             else:
-                new_name = " + ".join(f"{d.parent.name}\\{d.name}" for d in dest)
-                if core.ROLES[f["role"]][2] == (core.MAIN_DIR,):
-                    new_name = f"(patient folder)\\{dest[0].name}"
+                new_name = " + ".join(str(p.relative_to(main) if main else p) for p in dest)
             tags = ("unassigned",) if f["role"] is None else ()
-            self.tree.insert("", "end", iid=str(i), values=(f["src"].name, role_text, new_name), tags=tags)
+            self.tree.insert("", "end", iid=str(i), tags=tags,
+                             values=(f["src"].name, core.stage_name(f["stage"]), role_text, new_name))
 
         keep = [iid for iid in selected if self.tree.exists(iid)]
         if keep:
@@ -561,6 +580,18 @@ class App:
             self.role_var.set(core.ROLES[roles.pop()][0])
         else:
             self.role_var.set("")
+        stages = {self.files[i]["stage"] for i in idx}
+        self.stage_var.set(core.stage_name(stages.pop()) if len(stages) == 1 else "")
+
+    def apply_stage(self, event=None):
+        idx = self._selected_indexes()
+        if not idx:
+            messagebox.showinfo("No file selected", "Select one or more files in the list first.")
+            return
+        stage = STAGE_NAMES.index(self.stage_var.get())
+        for i in idx:
+            self.files[i]["stage"] = stage
+        self.refresh_files()
 
     def apply_role(self, event=None):
         idx = self._selected_indexes()
@@ -674,7 +705,7 @@ class App:
         if main.exists() and not messagebox.askyesno(
                 "Folder already exists",
                 f"{main.name}\n\nalready exists on the Desktop.\n"
-                "Update its CaseNotes and add the files? Existing files are not overwritten."):
+                "Update its CaseNotes and add the new files? Existing files are not overwritten."):
             return
 
         try:
@@ -689,7 +720,7 @@ class App:
                 self.notes_text, _ = core.read_casenotes(self.notes_file)
             if rx:
                 core.copy_files([(rx, core.plan_rx_copy(rx, main, d))])
-            plan = core.plan_file_copies(items, d, main)
+            plan = core.plan_file_copies(items, d, main, [f["stage"] for f in self.files])
             copied = core.copy_files(list(zip([f["src"] for f in self.files], plan)))
         except Exception as e:
             messagebox.showerror("Error", f"Something went wrong:\n{e}\n\n"
@@ -700,7 +731,10 @@ class App:
         contents = "the CaseNotes (case information only)"
         if rx:
             contents += ", the Rx PDF"
-        messagebox.showinfo("Done", f"Folder ready with {contents} and {len(copied)} file(s):\n\n{main}")
+        already = sum(1 for dests in plan if not dests)
+        skipped = f"\n{already} file(s) were already there and left as they are." if already else ""
+        messagebox.showinfo("Done", f"Folder ready with {contents} and {len(copied)} file(s):\n\n{main}"
+                                    + skipped)
         self.clear_files()
 
     def new_case(self):

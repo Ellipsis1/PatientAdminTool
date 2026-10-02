@@ -536,6 +536,48 @@ def guess_role(path, arch_type=""):
     return None
 
 
+# Design rounds. A file's stage is 0 for the initial design and n for revision n. Once a case
+# has a revision, these folders get a subfolder per stage so the doctor can compare rounds.
+STAGED_DIRS = (VIEWER_DIR, SCREENSHOT_DIR)
+MAX_STAGE = 9   # highest revision offered in the GUI
+
+_SEP = r"[\s_\-#.]*"
+_REVISION_RE = re.compile(
+    rf"(?<![a-z0-9])(?:revisions?|revised|re-?designs?|rev)(?:{_SEP}(\d{{1,2}})|(?!{_SEP}\d))(?![a-z0-9])",
+    re.IGNORECASE)
+_INITIAL_RE = re.compile(r"(?<![a-z])(?:initial|original)(?![a-z])", re.IGNORECASE)
+
+
+def stage_name(stage):
+    """Subfolder for a design round: 'Initial Design', 'Revision 1', 'Revision 2', ..."""
+    return f"Revision {stage}" if stage else "Initial Design"
+
+
+def file_stage(path, base=None):
+    """Which design round a working file belongs to: 0 = initial design, n = revision n.
+
+    The folders it sits in decide, nearest first: 'Revision 1', 'Rev 2', 'Redesign 3'
+    (no number means 1) or 'Initial Design'. Only folders below base, the working
+    folder, are read; without base, or for a file outside it, only the file's own folder.
+    Failing that, a numbered mark in the file name counts ('upper Rev 1.dcm').
+    Anything else is the initial design.
+    """
+    p = Path(path)
+    folders = (p.parent.name,)
+    if base is not None:
+        try:
+            folders = p.relative_to(base).parts[:-1]
+        except ValueError:
+            pass
+    for name in reversed(folders):
+        m = _REVISION_RE.search(name)
+        if m:
+            return int(m.group(1) or 1)
+        if _INITIAL_RE.search(name):
+            return 0
+    return next((int(m.group(1)) for m in _REVISION_RE.finditer(p.stem) if m.group(1)), 0)
+
+
 def _dest_dirs(role, uid):
     return [stl_folder_name(uid) if sub == STL_DIR else sub for sub in ROLES[role][2]]
 
@@ -581,24 +623,40 @@ def zips_not_for_patient(items, d):
             if role and Path(src).suffix.lower() == ".zip" and not _names_patient(Path(src).stem, p)]
 
 
-def plan_file_copies(items, d, main_folder=None):
+def plan_file_copies(items, d, main_folder=None, stages=None):
     """Work out where each case file will be copied and what it will be called.
 
     items: list of (source_path, role_key or None)
-    Returns a list the same length as items: a destination Path, or None for
-    files with no role yet. Nothing is written. Name collisions (with files
-    already on disk or earlier in this batch) get _02, _03, ... appended.
+    stages: each item's design round (see file_stage), or None for all initial.
+    Returns a list the same length as items: a list of destination Paths, or
+    None for files with no role yet. Nothing is written. Name collisions (with
+    files already on disk or earlier in this batch) get _02, _03, ... appended.
+    A destination that already holds that very file is left out, so running
+    Create again for the next round copies only what is new; the list is empty
+    when the file is everywhere it belongs.
     Roles without a name template (screenshots, other) keep the original name.
+    Once any file belongs to a revision, the STAGED_DIRS get a subfolder per
+    round ('Initial Design', 'Revision 1', ...); the other folders stay flat.
     """
     p = patient_from(d['name_id'], d['center'])
     root = Path(main_folder) if main_folder else Path()
+    stages = list(stages) if stages else [0] * len(items)
+    staged = any(stages)
     taken = set()
     results = []
 
-    def free(path):
-        return path not in taken and not (main_folder and path.exists())
+    def state(src, path):
+        """'free', 'taken', or 'same' when src itself is already at path."""
+        if path in taken:
+            return "taken"
+        if not (main_folder and path.exists()):
+            return "free"
+        try:
+            return "same" if filecmp.cmp(src, path) else "taken"
+        except OSError:
+            return "taken"
 
-    for src, role in items:
+    for (src, role), stage in zip(items, stages):
         if not role:
             results.append(None)
             continue
@@ -607,18 +665,18 @@ def plan_file_copies(items, d, main_folder=None):
         template = ROLES[role][1]
         fields = dict(uid=p.uid, f=p.first1, n=p.name3, c=p.center)
 
-        folders = [root / d for d in _dest_dirs(role, p.uid)]
-
-        def all_free(name):
-            return all(free(f / name) for f in folders)
+        folders = [root / sub / stage_name(stage) if staged and sub in STAGED_DIRS else root / sub
+                   for sub in _dest_dirs(role, p.uid)]
 
         base = src.stem if template is None else safe_name(template.format(**fields))
         name, n = f"{base}{ext}", 2
-        while not all_free(name):
+        while True:
+            states = [state(src, f / name) for f in folders]
+            if "taken" not in states:
+                break
             name, n = f"{base}_{n:02d}{ext}", n + 1
-        dests = [f / name for f in folders]
-        taken.update(dests)
-        results.append(dests)
+        taken.update(f / name for f in folders)
+        results.append([f / name for f, s in zip(folders, states) if s == "free"])
     return results
 
 

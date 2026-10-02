@@ -38,10 +38,32 @@ Desktop\
       ...screenshots, original names kept
 ```
 
+### Revisions
+
+Step 2 is repeated for each round: the first send to the doctor, every revision, and the final submission once the STL files and zip have been added to the working folder.
+
+For a revision, save the new files in a subfolder of the working folder named `Revision 1` (`Rev 2`, `Redesign 3` and the like work too), or put the mark in the file name (`upper Rev 1.dcm`). Files in the working folder itself, or in an `Initial Design` subfolder, are the initial design. The **Design** column shows what was detected and can be changed per file.
+
+Once a case has a revision, `3D Viewer` and `Design Screenshots` get a subfolder per round so the doctor can compare them; file names are the same standard names in each. The STL folder and the patient folder itself stay flat.
+
+```
+    3D Viewer\
+      Initial Design\
+        1234-QWER_MX_T_EST.dcm
+      Revision 1\
+        1234-QWER_MX_T_EST.dcm
+    Design Screenshots\
+      Initial Design\
+      Revision 1\
+```
+
+A case with no revision is laid out flat, as shown under Output. If the folder from the first send is still on the Desktop when a revision is added, its flat files stay where they are beside the new subfolders.
+
 ### Safeguards
 
 - Files are copied into the finished folder, never moved; the working folder stays complete.
 - Existing case files are never overwritten. A name that is already taken gets `_02`, `_03`, ... appended.
+- A file that is already in the finished folder, unchanged, is not copied again, so step 2 can be re-run for each round.
 - CaseNotes loaded from a file are not rebuilt, so hand edits survive. If the form differs from the file, the changes are listed and you are asked before anything is written.
 - Only STL files belong in the STL folder. If any other file type is headed there, a warning lists the files and asks whether to continue.
 - Zip files are copied into the patient folder under their own name. If a zip's name has neither the unique ID (or its first or last four characters) nor the patient name in it, a warning lists it as possibly belonging to another case and asks whether to continue.

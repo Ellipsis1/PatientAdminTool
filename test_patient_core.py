@@ -240,6 +240,40 @@ class GuessRoleTests(unittest.TestCase):
         self.assertIsNone(core.guess_role("cmd_export.stl"))
 
 
+class FileStageTests(unittest.TestCase):
+    BASE = Path("Desktop") / "T. REV 1234-QWER Chicago"
+
+    def stage(self, rel, base=BASE):
+        return core.file_stage(self.BASE / rel, base)
+
+    def test_from_folder(self):
+        for folder, stage in (("Revision 1", 1), ("Rev 2", 2), ("rev2", 2), ("Redesign 3", 3),
+                              ("Re-design_4", 4), ("Revision", 1), ("Revised files", 1),
+                              ("Revision 2 screenshots", 2), ("Initial Design", 0),
+                              ("Original", 0), ("Screenshots", 0), ("Review", 0)):
+            self.assertEqual(self.stage(f"{folder}/upper.dcm"), stage, folder)
+        self.assertEqual(self.stage("upper.dcm"), 0)
+        self.assertEqual(self.stage("Rev 2/Screenshots/a.png"), 2)
+        self.assertEqual(self.stage("Initial Design/upper rev 1.dcm"), 0)    # the folder decides
+
+    def test_from_file_name(self):
+        for name, stage in (("upper Rev 1.dcm", 1), ("upper_rev2.dcm", 2), ("Revision 3 lower.png", 3),
+                            ("upper redesign-2.dcm", 2), ("upper.dcm", 0), ("preview 1.png", 0),
+                            ("1234-QWER_MX_T_REV.dcm", 0), ("upper revised.dcm", 0)):   # needs a number
+            self.assertEqual(self.stage(name), stage, name)
+
+    def test_working_folder_name_is_not_read(self):
+        # 'T. REV 1234-...' is the patient, not a revision, with or without a known base.
+        self.assertEqual(self.stage("upper.dcm"), 0)
+        self.assertEqual(self.stage("upper.dcm", base=None), 0)
+        self.assertEqual(self.stage("Rev 1/upper.dcm", base=None), 1)
+        self.assertEqual(self.stage("Rev 1/upper.dcm", base=Path("elsewhere")), 1)
+
+    def test_stage_name(self):
+        self.assertEqual([core.stage_name(n) for n in (0, 1, 12)],
+                         ["Initial Design", "Revision 1", "Revision 12"])
+
+
 class PlanAndCopyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -308,6 +342,51 @@ class PlanAndCopyTests(unittest.TestCase):
             "1234-QWER_MD_T_EST_Chicago_03.stl",
             "s1_02.png",
             "s2.png",
+        ])
+
+    def test_running_again_skips_files_already_there(self):
+        dcm, model, shot = self.make("upper.dcm"), self.make("upper model.stl"), self.make("s1.png")
+        items = [(dcm, "MX_DCM"), (model, "MDL_MX"), (shot, "SCREENSHOT")]
+        core.copy_files(zip([dcm, model, shot], core.plan_file_copies(items, case(), self.main)))
+        self.assertEqual(core.plan_file_copies(items, case(), self.main), [[], [], []])
+
+        dcm.write_text("a changed design")                 # a changed file is still never overwritten
+        (self.main / "3D Viewer" / "1234-QWER_MDL_MX_T_EST_Chicago.stl").unlink()
+        plan = core.plan_file_copies(items, case(), self.main)
+        self.assertEqual(plan, [[self.main / "3D Viewer" / "1234-QWER_MX_T_EST_02.dcm"],
+                                [self.main / "3D Viewer" / "1234-QWER_MDL_MX_T_EST_Chicago.stl"],
+                                []])
+
+    def test_revisions_get_subfolders(self):
+        rev = self.src / "Revision 1"
+        rev.mkdir()
+        (rev / "upper.dcm").write_text("revised")
+        items = [(self.make("upper.dcm"), "MX_DCM"), (self.make("s1.png"), "SCREENSHOT"),
+                 (self.make("upper model.stl"), "MDL_MX"), (self.make("upper.stl"), "MX"),
+                 (self.make("1234 export.zip"), "KEEP"),
+                 (rev / "upper.dcm", "MX_DCM"), (self.make("s1 rev 2.png"), "SCREENSHOT")]
+        stages = [core.file_stage(src, self.src) for src, _ in items]
+        self.assertEqual(stages, [0, 0, 0, 0, 0, 1, 2])
+
+        def rel(plan):
+            return [[p.relative_to(self.main).as_posix() for p in dests] for dests in plan]
+
+        # The first send, before any revision, is flat.
+        first = core.plan_file_copies(items[:5], case(), self.main, stages[:5])
+        self.assertEqual(rel(first)[:2], [["3D Viewer/1234-QWER_MX_T_EST.dcm"],
+                                          ["Design Screenshots/s1.png"]])
+        core.copy_files(zip([src for src, _ in items], first))
+
+        # With a revision, the viewer and screenshot folders split by round; the rest stay
+        # flat, and what the first send already put there is not copied again.
+        self.assertEqual(rel(core.plan_file_copies(items, case(), self.main, stages)), [
+            ["3D Viewer/Initial Design/1234-QWER_MX_T_EST.dcm"],
+            ["Design Screenshots/Initial Design/s1.png"],
+            ["3D Viewer/Initial Design/1234-QWER_MDL_MX_T_EST_Chicago.stl"],
+            [],
+            [],
+            ["3D Viewer/Revision 1/1234-QWER_MX_T_EST.dcm"],      # same standard name
+            ["Design Screenshots/Revision 2/s1 rev 2.png"],
         ])
 
     def test_copy_keeps_originals(self):
