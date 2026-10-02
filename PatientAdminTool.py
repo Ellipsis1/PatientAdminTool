@@ -195,14 +195,9 @@ class App:
         tk.Button(form, text="Today", font=("Arial", 8),
                   command=lambda: self._set_today("rx_date")).grid(row=10, column=3, sticky="w", padx=(4, 0))
 
-        label(13, "Plan of Treatment:")
-        self.pot_label = tk.Label(form, text="(from Rx PDF)", font=("Arial", 9, "italic"),
-                                  fg="#555555", wraplength=220, justify="left")
-        self.pot_label.grid(row=13, column=1, columnspan=3, sticky="w", padx=8, pady=3)
-
         self.folder_label = tk.Label(form, text="", font=("Consolas", 9), fg="#1565C0",
                                      wraplength=330, justify="left")
-        self.folder_label.grid(row=14, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.folder_label.grid(row=13, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         self._set_defaults()
 
@@ -278,7 +273,7 @@ class App:
     def reload_lists(self):
         self.lists_source, self.lists_version = core.load_lists()
         for key, values in (("designer", core.DESIGNERS), ("center", core.CENTERS),
-                            ("tooth_shade", core.TOOTH_SHADES)):
+                            ("arch_type", core.ARCH_TYPES)):
             self.combos[key].config(values=values)
         self._update_title()
         if not self.lists_source:
@@ -351,7 +346,7 @@ class App:
         """Everything that blocks creating the folder, as readable lines."""
         out = []
         if not core.ID_RE.search(d.get("name_id", "")):
-            out.append("Name & ID (needs an ID like B658-CGAF)")
+            out.append("Name & ID (needs an ID like 1234-QWER)")
         for key, text in (("center", "Center"), ("arch_type", "Arch Type")):
             if not d.get(key):
                 out.append(text)
@@ -427,7 +422,6 @@ class App:
         for key in ("center", "tooth_shade", "stl_only", "ios_box", "due_date", "arch_type"):
             if data.get(key):
                 self.vars[key].set(data[key])
-        self.pot_label.config(text=data.get("plan_of_treatment", "(not found in PDF)"))
         self.update_preview()
 
     # ------------------------------------------------------------------ case files
@@ -589,7 +583,6 @@ class App:
         self._set_defaults()
         self.files.clear()
         self.rx_pdf = None
-        self.pot_label.config(text="(from Rx PDF)")
         self.pdf_zone.config(text=self._pdf_zone_text())
         self.update_preview()
 

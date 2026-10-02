@@ -11,10 +11,10 @@ import patient_core as core
 
 
 def case(**overrides):
-    d = dict(name_id="R. Yel B658-CGAF", center="Chicago", arch_type="LAO4",
+    d = dict(name_id="T. Est 1234-QWER", center="Chicago", arch_type="LAO4",
              split_file="No", cutback="No", stl_only="No", tooth_shade="A2",
              due_date="6/11/2026", surgery_date="", rx_date="6/3/2026",
-             scan_date="6/2/2026", ios_box="IOS", designer="Josh")
+             scan_date="6/2/2026", ios_box="IOS", designer="Byron")
     d.update(overrides)
     return d
 
@@ -39,18 +39,25 @@ class DateTests(unittest.TestCase):
 
 class NamingTests(unittest.TestCase):
     def test_patient_split(self):
-        p = core.patient_from("T. Hug (K445-P3AC)", "Milwaukee")
-        self.assertEqual((p.init2, p.name3, p.uid, p.first1), ("T.", "HUG", "K445-P3AC", "T"))
+        p = core.patient_from("T. Est (1234-QWER)", "Milwaukee")
+        self.assertEqual((p.init2, p.name3, p.uid, p.first1), ("T.", "EST", "1234-QWER", "T"))
 
     def test_folder_name(self):
-        self.assertEqual(core.folder_name(case()), "6.3.2026 R. YEL B658-CGAF Chicago")
+        self.assertEqual(core.folder_name(case()), "6.3.2026 T. EST 1234-QWER Chicago")
         self.assertTrue(core.folder_name(case(arch_type="MODEL ONLY")).endswith(" MODEL ONLY"))
 
     def test_casenotes_uses_given_today(self):
         notes = core.build_casenotes(case(), today=date(2026, 9, 29))
         self.assertIn("Awaiting Approval Date: 9/29/2026", notes)
-        self.assertIn("MAND STL NAME\nB658-CGAF_MD_R_YEL_Chicago", notes)
+        self.assertIn("MAND STL NAME\n1234-QWER_MD_T_EST_Chicago", notes)
         self.assertNotIn("MAX STL NAME", notes)
+
+    def test_arch_group_decides_which_names_are_listed(self):
+        for arch, has_max, has_mand in (("UAO4", True, False), ("LAO4", False, True),
+                                        ("DAO4", True, True), ("MODEL ONLY", True, True)):
+            notes = core.build_casenotes(case(arch_type=arch))
+            self.assertEqual("MAX STL NAME" in notes, has_max, arch)
+            self.assertEqual("MAND STL NAME" in notes, has_mand, arch)
 
 
 class ArchFromTreatmentTests(unittest.TestCase):
@@ -59,6 +66,62 @@ class ArchFromTreatmentTests(unittest.TestCase):
         self.assertEqual(core.arch_from_treatment("Upper Zirconia Arch Replacement"), "UAO4")
         self.assertEqual(core.arch_from_treatment("Upper and Lower Zirconia"), "DAO4")
         self.assertIsNone(core.arch_from_treatment(""))
+
+
+class FakePage:
+    """Stands in for a pdfplumber page: words are (text, x0, top)."""
+
+    def __init__(self, *words):
+        self.words = [dict(text=t, x0=x, top=top) for t, x, top in words]
+
+    def extract_words(self):
+        return self.words
+
+    def extract_text(self):
+        return " ".join(w["text"] for w in self.words)
+
+
+class RxPdfTests(unittest.TestCase):
+    # Layout of the Lab Rx: labels at x=55, values from x~130, the Note column from x=355
+    # and a couple of points higher than the form rows beside it.
+    PAGE1 = FakePage(
+        ("Patient", 55, 84.4), ("T.", 115, 82.0), ("Est", 131, 82.0), ("1234-QWER", 150, 82.0),
+        ("Due", 362, 84.4), ("Date:", 383, 84.4), ("6/8/2026", 490, 84.4),
+        ("Plan", 55, 148.1), ("of", 78, 148.1), ("Upper", 151, 148.1), ("Zirconia", 181, 148.1),
+        ("Arch", 218, 148.1), ("shade", 355, 145.9), ("lower", 400, 145.9),
+        ("Treatment:", 55, 159.4), ("Replacement", 151, 159.4), ("BL1", 355, 157.1),
+        ("Surgical", 55, 367.9), ("Arch:", 93, 367.9), ("STL", 143, 367.9), ("Only", 163, 367.9),
+    )
+    PAGE2 = FakePage(
+        ("Tooth", 55, 216.4), ("Shade:", 82, 216.4), ("BL3", 140, 216.4),
+        ("Tooth", 55, 242.6), ("Shade", 82, 242.6), ("Other:", 114, 242.6),
+        ("Scan", 55, 470.6), ("Type:", 80, 470.6), ("Intraoral", 131, 470.6),
+    )
+
+    def parse(self, *pages):
+        pdf = mock.MagicMock()
+        pdf.__enter__.return_value.pages = list(pages)
+        with mock.patch.object(core, "PDF_AVAILABLE", True), \
+                mock.patch.object(core, "pdfplumber", create=True) as plumber:
+            plumber.open.return_value = pdf
+            return core.parse_rx_pdf("rx.pdf")
+
+    def test_rows_read_left_to_right(self):
+        rows = [" ".join(w["text"] for w in r) for r in core._rows(self.PAGE1)]
+        self.assertIn("Plan of Upper Zirconia Arch shade lower", rows)
+
+    def test_note_column_does_not_hide_the_form(self):
+        out = self.parse(self.PAGE1, self.PAGE2)
+        self.assertEqual(out["name_id"], "T. Est 1234-QWER")
+        self.assertEqual(out["due_date"], "6/8/2026")
+        self.assertEqual(out["plan_of_treatment"], "Upper Zirconia Arch Replacement")
+        self.assertEqual(out["arch_type"], "UAO4")      # "lower" in the note is not the plan
+        self.assertEqual(out["stl_only"], "Yes")
+
+    def test_fields_pushed_onto_page_two_are_read(self):
+        out = self.parse(self.PAGE1, self.PAGE2)
+        self.assertEqual(out["tooth_shade"], "BL3")
+        self.assertEqual(out["ios_box"], "IOS")
 
 
 class GuessRoleTests(unittest.TestCase):
@@ -111,46 +174,46 @@ class PlanAndCopyTests(unittest.TestCase):
         rel = [[p.relative_to(self.main).as_posix() for p in dests] if dests else None
                for dests in plan]
         self.assertEqual(rel, [
-            ["B658-CGAF STL/B658-CGAF_MD_R_YEL_Chicago.stl"],
-            ["Design Screenshots/B658-CGAF_R_YEL_Screenshot_01.png"],
-            ["B658-CGAF STL/B658-CGAF_MDL_MX_R_YEL_Chicago.stl",       # models go to both
-             "3D Viewer/B658-CGAF_MDL_MX_R_YEL_Chicago.stl"],
+            ["1234-QWER STL/1234-QWER_MD_T_EST_Chicago.stl"],
+            ["Design Screenshots/b.png"],                              # screenshots keep their name
+            ["1234-QWER STL/1234-QWER_MDL_MX_T_EST_Chicago.stl",       # models go to both
+             "3D Viewer/1234-QWER_MDL_MX_T_EST_Chicago.stl"],
             ["notes.pdf"],
             None,
         ])
 
     def test_collisions_in_batch_and_on_disk(self):
-        existing = self.main / "B658-CGAF STL" / "B658-CGAF_MD_R_YEL_Chicago.stl"
+        existing = self.main / "1234-QWER STL" / "1234-QWER_MD_T_EST_Chicago.stl"
         existing.parent.mkdir(parents=True)
         existing.write_text("old")
         shots = self.main / "Design Screenshots"
         shots.mkdir()
-        (shots / "B658-CGAF_R_YEL_Screenshot_01.png").write_text("old")
+        (shots / "s1.png").write_text("old")
 
         items = [(self.make("a.stl"), "MD"), (self.make("b.stl"), "MD"),
                  (self.make("s1.png"), "SCREENSHOT"), (self.make("s2.png"), "SCREENSHOT")]
         names = [dests[0].name for dests in core.plan_file_copies(items, case(), self.main)]
         self.assertEqual(names, [
-            "B658-CGAF_MD_R_YEL_Chicago_02.stl",
-            "B658-CGAF_MD_R_YEL_Chicago_03.stl",
-            "B658-CGAF_R_YEL_Screenshot_02.png",
-            "B658-CGAF_R_YEL_Screenshot_03.png",
+            "1234-QWER_MD_T_EST_Chicago_02.stl",
+            "1234-QWER_MD_T_EST_Chicago_03.stl",
+            "s1_02.png",
+            "s2.png",
         ])
 
     def test_copy_keeps_originals(self):
         src = self.make("upper.stl", "mesh")
-        core.create_folder_structure(self.main, "B658-CGAF", notes="hello")
+        core.create_folder_structure(self.main, "1234-QWER", notes="hello")
         plan = core.plan_file_copies([(src, "MX")], case(), self.main)
         core.copy_files(zip([src], plan))
         self.assertTrue(src.exists())
         self.assertEqual(plan[0][0].read_text(), "mesh")
         self.assertEqual((self.main / "CaseNotes.txt").read_text(), "hello")
-        for sub in ("3D Viewer", "Design Screenshots", "B658-CGAF STL"):
+        for sub in ("3D Viewer", "Design Screenshots", "1234-QWER STL"):
             self.assertTrue((self.main / sub).is_dir())
 
     def test_rx_pdf_goes_beside_casenotes(self):
         rx = self.make("Lab Rx.pdf", "rx")
-        core.create_folder_structure(self.main, "B658-CGAF", notes="hello")
+        core.create_folder_structure(self.main, "1234-QWER", notes="hello")
         plan = core.plan_rx_copy(rx, self.main)
         self.assertEqual(plan, [self.main / "Lab Rx.pdf"])
         core.copy_files([(rx, plan)])
@@ -179,12 +242,14 @@ class ListsTests(unittest.TestCase):
 
     def setUp(self):
         self.saved = {k: list(v) for k, v in core._EDITABLE.items()}
+        self.saved_arch_types = list(core.ARCH_TYPES)
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / core.LISTS_FILE
 
     def tearDown(self):
         for k, v in self.saved.items():
             core._EDITABLE[k][:] = v
+        core.ARCH_TYPES[:] = self.saved_arch_types
         self.tmp.cleanup()
 
     def write(self, text):
@@ -198,6 +263,22 @@ class ListsTests(unittest.TestCase):
         self.assertIs(core.DESIGNERS, ref)              # same object, new contents
         self.assertEqual(core.DESIGNERS, ["Zed"])
         self.assertEqual(core.CENTERS, self.saved["centers"])  # invalid value ignored
+
+    def test_arch_groups_come_from_json(self):
+        ref = core.ARCH_TYPES
+        shades = list(core.TOOTH_SHADES)
+        p = self.write(json.dumps({"upper_arch": ["New Upper"], "double_arch": ["New Double"],
+                                   "other_arch": ["New Other"], "tooth_shades": ["Z9"]}))
+        core.apply_lists([p])
+        self.assertIs(core.ARCH_TYPES, ref)             # the dropdown's list, rebuilt in place
+        self.assertEqual(core.ARCH_TYPES,
+                         ["New Upper"] + self.saved["lower_arch"] + ["New Double", "New Other"])
+        self.assertEqual((core.is_upper("New Upper"), core.is_lower("New Upper")), (True, False))
+        self.assertEqual((core.is_upper("New Double"), core.is_lower("New Double")), (True, True))
+        self.assertEqual((core.is_upper("New Other"), core.is_lower("New Other")), (True, True))
+        self.assertFalse(core.is_upper("UAO4"))         # no longer offered
+        self.assertEqual(core.guess_role("scan.stl", "New Upper"), "MX")
+        self.assertEqual(core.TOOTH_SHADES, shades)     # not editable from the JSON
 
     def test_load_uses_file_beside_app(self):
         p = self.write(json.dumps({"version": "b1", "designers": ["Bo"]}))

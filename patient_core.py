@@ -36,14 +36,17 @@ except Exception:
 # See JSON List
 DESIGNERS = ['TEST DESIGNER']
 
-ARCH_TYPES = ['UAO4 - Try-in', 'UAO4', 'Upper - MxOD', 'Upper - MxCD',
-    'Double - MxCD-LAO4', 'Double - MxCD-LOD', 'Double - UOD-LAO4', 'Double - UAO4-LOD',
-    'Double - MdCD-UAO4', 'Double - MdCD-UOD', 'MODEL ONLY', 'Double CD', 'Double OD',
-    'DAO4 - Try-in', 'DAO4', 'Lower - MdCD', 'Lower - MdOD', 'LAO4 - Try-in', 'LAO4']
+# Arch types, grouped by the arch they cover. lists.json overrides these; they are the fallback.
+UPPER_ARCH = ['UAO4 - Try-in', 'UAO4', 'Upper - MxOD', 'Upper - MxCD']
+LOWER_ARCH = ['Lower - MdCD', 'Lower - MdOD', 'LAO4 - Try-in', 'LAO4']
+DOUBLE_ARCH = ['Double - MxCD-LAO4', 'Double - MxCD-LOD', 'Double - UOD-LAO4', 'Double - UAO4-LOD',
+    'Double - MdCD-UAO4', 'Double - MdCD-UOD', 'Double CD', 'Double OD', 'DAO4 - Try-in', 'DAO4']
+# Products that are not tied to one arch. CaseNotes lists both arches' names for them.
+OTHER_ARCH = ['MODEL ONLY']
 
-
-UPPER_ARCH = ARCH_TYPES[0:15]
-LOWER_ARCH = ARCH_TYPES[4:19]
+# Everything the Arch Type dropdown offers, in display order. Rebuilt whenever the groups change.
+_ARCH_GROUPS = (UPPER_ARCH, LOWER_ARCH, DOUBLE_ARCH, OTHER_ARCH)
+ARCH_TYPES = [a for group in _ARCH_GROUPS for a in group]
 
 TOOTH_SHADES = ['A1', 'A2', 'A3', 'A3.5', 'A4', 'B1', 'B2', 'B3', 'B4', 'C1', 'C2',
     'C3', 'C4', 'D2', 'D3', 'D4', 'N/A', 'BL1', 'BL2', 'BL3', 'BL4']
@@ -112,15 +115,15 @@ def shift_month(year, month, delta):
 # =============================================================================
 @dataclass(frozen=True)
 class Patient:
-    init2: str    # "R."
-    name3: str    # "YEL"
-    uid: str      # "B658-CGAF"
-    first1: str   # "R"
+    init2: str    # "T."
+    name3: str    # "EST"
+    uid: str      # "1234-QWER"
+    first1: str   # "T"
     center: str   # "Chicago"
 
 
 def patient_from(name_id, center):
-    """Split 'R. Yel B658-CGAF' the same way the Excel formula does."""
+    """Split 'T. TES 1234-QWER' the same way the Excel formula does."""
     clean = name_id.replace(")", "").replace(" ", "")
     clean_p = clean.replace("(", "")
     return Patient(
@@ -133,11 +136,11 @@ def patient_from(name_id, center):
 
 
 def is_upper(arch_type):
-    return arch_type in UPPER_ARCH
+    return any(arch_type in group for group in (UPPER_ARCH, DOUBLE_ARCH, OTHER_ARCH))
 
 
 def is_lower(arch_type):
-    return arch_type in LOWER_ARCH
+    return any(arch_type in group for group in (LOWER_ARCH, DOUBLE_ARCH, OTHER_ARCH))
 
 
 def stl_folder_name(uid):
@@ -145,7 +148,7 @@ def stl_folder_name(uid):
 
 
 def folder_name(d):
-    """Patient folder name, e.g. '6.11.2026 R. YEL B658-CGAF Chicago'."""
+    """Patient folder name, e.g. '6.11.2026 T. TES 1234-QWER Chicago'."""
     p = patient_from(d['name_id'], d['center'])
     model_only = " MODEL ONLY" if d.get('arch_type') == "MODEL ONLY" else ""
     return f"{fmt_date(d.get('rx_date'), '.')} {p.init2} {p.name3} {p.uid} {p.center}{model_only}"
@@ -213,7 +216,7 @@ def build_casenotes(d, today=None):
 # Rx PDF parsing (best-effort pre-fill; everything stays editable in the GUI)
 # =============================================================================
 def _rows(page, tol=3):
-    """Group a page's words into visual rows by their vertical position."""
+    """Group a page's words into visual rows by their vertical position, each row left to right."""
     words = sorted(page.extract_words(), key=lambda w: (round(w['top']), w['x0']))
     rows, cur, cur_top = [], [], None
     for w in words:
@@ -225,7 +228,9 @@ def _rows(page, tol=3):
             cur, cur_top = [w], w['top']
     if cur:
         rows.append(cur)
-    return rows
+    # The Note column sits a point or two higher than the form labels beside it, so the
+    # sort above can put its words first. Labels are matched with startswith: fix the order.
+    return [sorted(r, key=lambda w: w['x0']) for r in rows]
 
 
 def _right_of(row, x, xmax=10_000):
@@ -235,7 +240,7 @@ def _right_of(row, x, xmax=10_000):
 def arch_from_treatment(plan_of_treatment, upper_arch_value="", lower_arch_value=""):
     """Default arch type from the Plan of Treatment text.
 
-    The PDF's arch checkboxes are not in th e text layer, so we infer the side:
+    The PDF's arch checkboxes are not in the text layer, so we infer the side:
     'Lower Zirconia Arch Replacement' -> LAO4, upper -> UAO4, both -> DAO4.
     """
     pot = (plan_of_treatment or "").lower()
@@ -256,10 +261,10 @@ def parse_rx_pdf(path):
     if not PDF_AVAILABLE:
         return out
     with pdfplumber.open(path) as pdf:
-        p1 = pdf.pages[0]
-        full1 = p1.extract_text() or ""
+        full1 = pdf.pages[0].extract_text() or ""
         pot_parts, upper_at, lower_at = [], "", ""
-        for row in _rows(p1):
+        # A long Note pushes the rest of the form down onto the next page, so read them all.
+        for row in (r for page in pdf.pages for r in _rows(page)):
             low = " ".join(w['text'] for w in row).lower()
             if 'name_id' not in out:
                 rt = _right_of(row, 110)
@@ -273,9 +278,15 @@ def parse_rx_pdf(path):
             if low.startswith('surgical arch'):
                 out['stl_only'] = 'Yes' if 'stl only' in _right_of(row, 120).lower() else 'No'
             if low.startswith('tooth shade:'):
-                v = _right_of(row, 120)
+                v = _right_of(row, 120, 300)
                 if v:
                     out['tooth_shade'] = v.split()[0]
+            if low.startswith('scan type:'):
+                v = _right_of(row, 120, 300).lower()
+                if 'intraoral' in v:
+                    out['ios_box'] = 'IOS'
+                elif 'desktop' in v:
+                    out['ios_box'] = 'Box'
             if low.startswith('plan of') or low.startswith('treatment:'):
                 pot_parts.append(_right_of(row, 110, 300))
             if low.startswith('upper arch type'):
@@ -291,12 +302,6 @@ def parse_rx_pdf(path):
         arch = arch_from_treatment(pot, upper_at, lower_at)
         if arch:
             out['arch_type'] = arch
-        if len(pdf.pages) > 1:
-            t2 = (pdf.pages[1].extract_text() or "").lower()
-            if 'intraoral' in t2:
-                out['ios_box'] = 'IOS'
-            elif 'desktop' in t2:
-                out['ios_box'] = 'Box'
     for c in sorted(CENTERS, key=len, reverse=True):
         base = c.split(" - ")[-1]
         if re.search(rf"\b{re.escape(base)}\b", full1, re.IGNORECASE):
@@ -326,9 +331,9 @@ ROLES = {
     "BITE":       ("BITE STL",             "{uid}_BITE_{f}_{n}_{c}",        (STL_DIR,)),
     "MDL_MX":     ("MAX MODEL",            "{uid}_MDL_MX_{f}_{n}_{c}",      (STL_DIR, VIEWER_DIR)),
     "MDL_MD":     ("MAND MODEL",           "{uid}_MDL_MD_{f}_{n}_{c}",      (STL_DIR, VIEWER_DIR)),
-    "WRK_MX":     ("MAX WORKING MODEL",    "{uid}_WRK_MX_{f}_{n}",          (STL_DIR, VIEWER_DIR)),
-    "WRK_MD":     ("MAND WORKING MODEL",   "{uid}_WRK_MD_{f}_{n}",          (STL_DIR, VIEWER_DIR)),
-    "SCREENSHOT": ("Design Screenshot",    "{uid}_{f}_{n}_Screenshot_{num:02d}", (SCREENSHOT_DIR, )),
+    "WRK_MX":     ("MAX WORKING MODEL",    "{uid}_WRK_MX_{f}_{n}",          (VIEWER_DIR, )),
+    "WRK_MD":     ("MAND WORKING MODEL",   "{uid}_WRK_MD_{f}_{n}",          (VIEWER_DIR, )),
+    "SCREENSHOT": ("Screenshot (keep name)",None,                           (SCREENSHOT_DIR, )),
     "KEEP":       ("Other (keep name)",    None,                            (MAIN_DIR, )),
 }
 ROLE_LABELS = [v[0] for v in ROLES.values()]
@@ -392,12 +397,11 @@ def plan_file_copies(items, d, main_folder=None):
     Returns a list the same length as items: a destination Path, or None for
     files with no role yet. Nothing is written. Name collisions (with files
     already on disk or earlier in this batch) get _02, _03, ... appended.
-    Screenshots are numbered after any that already exist.
+    Roles without a name template (screenshots, other) keep the original name.
     """
     p = patient_from(d['name_id'], d['center'])
     root = Path(main_folder) if main_folder else Path()
     taken = set()
-    shot_num = 0
     results = []
 
     def free(path):
@@ -417,17 +421,10 @@ def plan_file_copies(items, d, main_folder=None):
         def all_free(name):
             return all(free(f / name) for f in folders)
 
-        if role == "SCREENSHOT":
-            while True:
-                shot_num += 1
-                name = safe_name(template.format(num=shot_num, **fields)) + ext
-                if all_free(name):
-                    break
-        else:
-            base = src.stem if template is None else safe_name(template.format(**fields))
-            name, n = f"{base}{ext}", 2
-            while not all_free(name):
-                name, n = f"{base}_{n:02d}{ext}", n + 1
+        base = src.stem if template is None else safe_name(template.format(**fields))
+        name, n = f"{base}{ext}", 2
+        while not all_free(name):
+            name, n = f"{base}_{n:02d}{ext}", n + 1
         dests = [f / name for f in folders]
         taken.update(dests)
         results.append(dests)
@@ -485,9 +482,11 @@ def save_settings(data, path=None):
 # =============================================================================
 LISTS_FILE = "lists.json"
 
-# Only these lists are editable from the JSON. Arch types stay in code because the
-# upper/lower CaseNotes logic depends on their exact order.
-_EDITABLE = {"designers": DESIGNERS, "centers": CENTERS, "tooth_shades": TOOTH_SHADES}
+# Only these lists are editable from the JSON. Which arch group a type sits in decides
+# the upper/lower CaseNotes logic.
+_EDITABLE = {"designers": DESIGNERS, "centers": CENTERS,
+             "upper_arch": UPPER_ARCH, "lower_arch": LOWER_ARCH,
+             "double_arch": DOUBLE_ARCH, "other_arch": OTHER_ARCH}
 
 
 def app_dir():
@@ -519,6 +518,7 @@ def apply_lists(paths):
             new = data.get(key)
             if isinstance(new, list) and new and all(isinstance(x, str) for x in new):
                 target[:] = new
+        ARCH_TYPES[:] = [a for group in _ARCH_GROUPS for a in group]
         return Path(path), str(data.get("version", "unknown"))
     return None, None
 

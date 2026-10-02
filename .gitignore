@@ -15,6 +15,9 @@ venv/
 # Designer / center lists stay out of the repo (keep a local copy beside the app)
 lists.json
 
+# Sample Rx PDFs for testing the parser (patient data, never commit)
+sample_rx/
+
 # PyInstaller output (dist/ holds a copy of lists.json)
 dist/
 build/
