@@ -15,6 +15,12 @@ python -m unittest test_patient_core.DateTests.test_formats   # single test
 
 `pdfplumber` and `tkinterdnd2` are optional at runtime: imports are guarded (`core.PDF_AVAILABLE`, `DND_AVAILABLE`) and the GUI degrades to click-to-browse / manual entry. Keep new optional deps behind the same pattern.
 
+Build the exe (no spec file is kept; `build/`, `dist/` and `*.spec` are gitignored), then copy `lists.json` into `dist/`:
+
+```
+pyinstaller --noconfirm --clean --onefile --windowed --name PatientAdminTool --collect-all tkinterdnd2 PatientAdminTool.py
+```
+
 The app is distributed as a PyInstaller exe; `core.app_dir()` resolves to the exe's folder when frozen, and the bundled `lists.json` is expected next to it. `lists.json` is gitignored (the designer and center lists are kept out of the repo), so a fresh clone has none and the lists in `patient_core.py` are placeholders.
 
 ## Architecture
@@ -41,9 +47,10 @@ Dropping an Rx PDF and going straight to "Create Folder + Notes + Files" still d
 - **`working_folder_files()` only searches a folder named for the patient** (folder name contains the unique ID), so CaseNotes dropped from the Desktop or Downloads don't pull in their neighbours. It recurses, but skips the three subfolders a finished patient folder has.
 - **`parse_casenotes()` is the inverse of the `build_casenotes()` header.** If a header line is added or reworded in one, update the other; `ParseCaseNotesTests.test_round_trip` checks they agree.
 - **Arch types live in four groups**: `UPPER_ARCH`, `LOWER_ARCH`, `DOUBLE_ARCH`, `OTHER_ARCH` (e.g. `MODEL ONLY`). The group a type sits in, not its position, drives the upper/lower logic in CaseNotes and `guess_role` via `is_upper()` / `is_lower()`. Double and Other types count as both arches. `ARCH_TYPES` is the flattened dropdown list (upper, lower, double, other), rebuilt in place by `apply_lists()`. `arch_from_treatment()` and `folder_name()` still name `UAO4` / `LAO4` / `DAO4` / `MODEL ONLY` literally.
-- **File roles** are defined once in `ROLES` (label, name template, destination subfolders). `STL_DIR` is a placeholder resolved to `"<uid> STL"`; `MAIN_DIR` (`""`) is the patient folder root. Some roles copy to two folders. `guess_role()` infers a role from filename tokens/extension, falling back on arch type; `None` means the user must choose.
+- **File roles** are defined once in `ROLES` (label, name template, destination subfolders). `STL_DIR` is a placeholder resolved to `"<uid> STL"`; `MAIN_DIR` (`""`) is the patient folder root. Some roles copy to two folders. `guess_role()` infers a role from filename tokens/extension, falling back on arch type; `None` means the user must choose. Name tokens (cutback, base, teeth, working, model) are checked before the extension, so a `.dcm` working model is `WRK_*`; only a `.dcm` with none of those tokens gets the plain `*_DCM` role.
+- **Only `.stl` files belong in the STL folder.** `non_stl_for_stl_folder()` lists the source files whose role routes to `STL_DIR` but whose extension is not `.stl` (so `.ply`, `.obj` and `.dcm` count). At "Create Folder + Notes + Files" the GUI shows them in a warning and asks to continue, before anything is written; it is a warning, not a block.
 - **`plan_file_copies()` is pure planning** — computes destinations, resolves collisions with `_02`, `_03`… suffixes (against disk and within the batch). Roles with no name template (screenshots, other) keep the original file name. `copy_files()` does the I/O. Keep the plan/execute split so the GUI can preview names live.
-- **Rx PDF parsing** (`parse_rx_pdf`) is best-effort, using word x-positions (hard-coded column offsets like 110/120/140/300/360) for a specific ClearChoice Lab Rx layout. It reads every page, because a long Note pushes the lower form fields (tooth shade, scan type) onto page 2. The Note column (x ≥ 355) shares rows with the form labels, so `_rows()` sorts each row left to right and form values are read with an `xmax` of 300. Real Rx PDFs for checking the parser go in the gitignored `sample_rx/`; the unit tests use synthetic word positions. Arch checkboxes aren't in the text layer, so arch type is inferred from Plan of Treatment text.
+- **Rx PDF parsing** (`parse_rx_pdf`) is best-effort, using word x-positions (hard-coded column offsets like 110/120/140/300/360) for one specific Lab Rx layout. It reads every page, because a long Note pushes the lower form fields (tooth shade, scan type) onto page 2. The Note column (x ≥ 355) shares rows with the form labels, so `_rows()` sorts each row left to right and form values are read with an `xmax` of 300. Real Rx PDFs for checking the parser go in the gitignored `sample_rx/`; the unit tests use synthetic word positions. Arch checkboxes aren't in the text layer, so arch type is inferred from Plan of Treatment text.
 
 ### Dropdown lists (`lists.json`)
 

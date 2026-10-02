@@ -404,7 +404,7 @@ def arch_from_treatment(plan_of_treatment, upper_arch_value="", lower_arch_value
 
 
 def parse_rx_pdf(path):
-    """Return a dict of best-effort fields from a ClearChoice Lab Rx PDF."""
+    """Return a dict of best-effort fields from a Lab Rx PDF."""
     out = {}
     if not PDF_AVAILABLE:
         return out
