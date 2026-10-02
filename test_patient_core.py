@@ -87,13 +87,64 @@ class ParseCaseNotesTests(unittest.TestCase):
         notes = core.build_casenotes(case(revisions="2"))
         self.assertIn("\nRevisions: 2\n", notes)
         self.assertEqual(core.parse_casenotes(notes)["revisions"], "2")
-        edited = notes.replace("\n", "\r\n") + "\r\nhand edit, Revisions: unrelated"
-        self.assertEqual(core.set_revisions(edited, "3"),
-                         edited.replace("Revisions: 2\r\n", "Revisions: 3\r\n", 1))
 
     def test_other_text_is_rejected(self):
         self.assertEqual(core.parse_casenotes("Shopping list:\n- milk\n"), {})
         self.assertEqual(core.parse_casenotes(""), {})
+
+
+def loaded_form(text):
+    """The form as the window fills it from a CaseNotes text."""
+    return dict.fromkeys(case(), "") | {"revisions": "0"} | core.parse_casenotes(text)
+
+
+class CaseInfoChangeTests(unittest.TestCase):
+    """Edits made on the form after loading CaseNotes are written into those notes."""
+
+    def setUp(self):
+        # as a designer left it: Windows line endings, a reworded line, an extra line
+        self.text = (core.build_casenotes(case(revisions="1"), today=date(2026, 9, 29))
+                     .replace("\n", "\r\n")
+                     .replace("Designer: Byron", "Designer: Byron (covering for Zed)")
+                     .replace("Revisions: 1", "Shipping: hold until Friday\r\nRevisions: 1"))
+        self.form = loaded_form(self.text)
+
+    def test_untouched_form_changes_nothing(self):
+        self.assertEqual(core.casenotes_changes(self.text, self.form), [])
+        self.assertEqual(core.apply_case_info(self.text, self.form), self.text)
+        same_dates = self.form | {"due_date": "06/11/2026", "rx_date": "6/3/26"}   # retyped
+        self.assertEqual(core.casenotes_changes(self.text, same_dates), [])
+        self.assertEqual(core.casenotes_changes(self.text, self.form | {"name_id": "t. est 1234-qwer"}), [])
+
+    def test_changed_fields_are_listed_and_written(self):
+        form = self.form | {"due_date": "06/15/2026", "surgery_date": "6/20/2026", "revisions": "2"}
+        self.assertEqual(core.casenotes_changes(self.text, form),
+                         [("Due by Date", "6/11/2026", "6/15/2026"),
+                          ("Surgery", "", "6/20/2026"),
+                          ("Revisions", "1", "2")])
+        want = (self.text.replace("Due by Date: 6/11/2026", "Due by Date: 6/15/2026")
+                .replace("Surgery: \r\n", "Surgery: 6/20/2026\r\n")
+                .replace("Revisions: 1", "Revisions: 2"))
+        self.assertEqual(core.apply_case_info(self.text, form), want)   # nothing else moved
+        self.assertIn("Designer: Byron (covering for Zed)\r\n", want)
+        self.assertIn("Awaiting Approval Date: 9/29/2026\r\n", want)
+
+    def test_name_arch_and_cleared_fields(self):
+        form = self.form | {"name_id": "T. Est 9999-ZZZZ", "arch_type": "DAO4",
+                            "split_file": "Double", "tooth_shade": ""}
+        self.assertEqual(core.casenotes_changes(self.text, form),
+                         [("Unique ID", "1234-QWER", "9999-ZZZZ"),
+                          ("Arch Type", "LAO4", "DAO4 Double Split File"),
+                          ("Tooth Shade", "A2", "")])
+        out = core.apply_case_info(self.text, form)
+        self.assertIn("Unique ID: 9999-ZZZZ\r\n", out)
+        self.assertIn("Arch Type: DAO4 Double Split File\r\n", out)
+        self.assertIn("Patient Name: T. EST\r\n", out)
+
+    def test_missing_line_is_added_above_revisions(self):
+        text = "Unique ID: 1234-QWER\nPatient Name: T. EST\nRevisions: 0\n\n____\nMODELS\n"
+        out = core.apply_case_info(text, loaded_form(text) | {"due_date": "6/15/2026"})
+        self.assertIn("Due by Date: 6/15/2026\nRevisions: 0\n\n____\nMODELS\n", out)
 
 
 class ArchFromTreatmentTests(unittest.TestCase):
@@ -273,31 +324,43 @@ class PlanAndCopyTests(unittest.TestCase):
     def test_final_casenotes_from_a_loaded_file(self):
         name = core.casenotes_name(case())
         # an old Excel-era file: cp1252, Windows line endings, edited by hand
-        raw = ("Unique ID: 1234-QWER\r\nDesigner: Zoë (was Byron)\r\nRevisions: 1\r\n\r\n"
-               "____________\r\nMAX STL NAME\r\ncafé note\r\n").encode("cp1252")
+        head = "Unique ID: 1234-QWER\r\nDesigner: Zoë (was Byron)\r\nDue by Date: 6/11/2026\r\n"
+        raw = (head + "Revisions: 1\r\n\r\n____________\r\nMAX STL NAME\r\ncafé note\r\n").encode("cp1252")
         working = self.src / "CaseNotes.txt"
         working.write_bytes(raw)
-        dest = core.write_final_casenotes(working, self.main, name, "2")
+        text, enc = core.read_casenotes(working)
+        self.assertEqual((enc, core.parse_casenotes(text)["designer"]), ("cp1252", "Zoë (was Byron)"))
+        form = loaded_form(text)
+        self.assertEqual(core.casenotes_changes(text, form), [])
+        form |= {"revisions": "2", "due_date": "6/15/2026"}
+        dest = core.write_final_casenotes(working, self.main, name, form)
         self.assertEqual(dest, self.main / name)
-        self.assertEqual(dest.read_bytes(), "Unique ID: 1234-QWER\r\nDesigner: Zoë (was Byron)\r\n"
-                                            "Revisions: 2\r\n".encode("cp1252"))
-        # the working copy stays, complete, with the new count
-        self.assertEqual(working.read_bytes(), raw.replace(b"Revisions: 1", b"Revisions: 2"))
+        new_head = head.replace("6/11/2026", "6/15/2026") + "Revisions: 2\r\n"
+        self.assertEqual(dest.read_bytes(), new_head.encode("cp1252"))
+        # the working copy stays, complete, with the same changes
+        self.assertEqual(working.read_bytes(), raw.replace(b"Revisions: 1", b"Revisions: 2")
+                                                  .replace(b"6/11/2026", b"6/15/2026"))
         # dropping the finished folder's own notes back in just updates them
-        core.write_final_casenotes(dest, self.main, name, "3")
-        self.assertEqual(dest.read_bytes(), "Unique ID: 1234-QWER\r\nDesigner: Zoë (was Byron)\r\n"
-                                            "Revisions: 3\r\n".encode("cp1252"))
+        core.write_final_casenotes(dest, self.main, name, form | {"revisions": "3"})
+        self.assertEqual(dest.read_bytes(), new_head.replace("Revisions: 2", "Revisions: 3").encode("cp1252"))
 
     def test_initial_folder_gets_notes_and_the_rx_moved_in(self):
         base = self.root / "Desktop" / core.base_folder_name(case())
         rx = self.make("Lab Rx.pdf", "rx")
         notes, moved = core.create_initial_folder(base, case(), rx)
-        self.assertEqual(notes, base / "1234-QWER_T_EST_CaseNotes.txt")
+        # the "!" keeps both above anything the designer saves in the folder
+        self.assertEqual(notes, base / "!1234-QWER_T_EST_CaseNotes.txt")
         self.assertEqual(notes.read_text(), core.build_casenotes(case()))
-        self.assertEqual(moved, base / "1234-QWER_T_EST_Rx.pdf")
+        self.assertEqual(moved, base / "!1234-QWER_T_EST_Rx.pdf")
         self.assertEqual(moved.read_text(), "rx")
         self.assertFalse(rx.exists())                             # moved, not copied
         self.assertEqual(sorted(p.name for p in base.iterdir()), [notes.name, moved.name])
+        # the finished folder's copies drop the "!"
+        self.assertEqual(core.plan_rx_copy(moved, self.main, case()),
+                         [self.main / "1234-QWER_T_EST_Rx.pdf"])
+        self.assertEqual(core.write_final_casenotes(notes, self.main, core.casenotes_name(case()),
+                                                    loaded_form(notes.read_text())),
+                         self.main / "1234-QWER_T_EST_CaseNotes.txt")
         self.assertEqual(core.create_initial_folder(base, case(), moved), (notes, None))   # again
         self.assertTrue(moved.exists())
         self.assertEqual(core.create_initial_folder(base, case()), (notes, None))          # no Rx
@@ -313,6 +376,9 @@ class PlanAndCopyTests(unittest.TestCase):
         self.assertEqual(found_rx, rx)
         self.assertEqual([f.relative_to(base).as_posix() for f in files],
                          ["other.pdf", "shots/front.png", "upper.stl"])
+        # a working folder from before the "!" naming still has its Rx recognised
+        plain = rx.rename(base / "1234-QWER_T_EST_Rx.pdf")
+        self.assertEqual(core.working_folder_files(notes, case()), (plain, files))
         # CaseNotes sitting somewhere not named for the patient: leave the neighbours alone
         loose = self.make("1234-QWER_T_EST_CaseNotes.txt")
         self.make("someone elses.stl")

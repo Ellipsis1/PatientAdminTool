@@ -6,7 +6,8 @@ Starting a case:
 2. Pick the rest from the dropdowns and fill in the dates.
 3. Click "Create Initial Folder + CaseNotes". A working folder like
    "T. EST 1234-QWER Chicago" appears on the Desktop holding the CaseNotes
-   and the Rx PDF (moved in), both named with the patient's ID and name.
+   and the Rx PDF (moved in), both named with the patient's ID and name
+   after a "!" that keeps them at the top of the folder.
    The designer saves models and screenshots there and edits the CaseNotes.
 
 Finishing a case:
@@ -385,15 +386,16 @@ class App:
 
     # ------------------------------------------------------------------ preview
     def _notes_text(self, d):
-        """A loaded CaseNotes file keeps its own text (hand edits and all) apart from the
-        Revisions count, which follows the form. Otherwise the notes are built from the form."""
+        """A loaded CaseNotes file keeps its own text (hand edits and all); only the lines for
+        Case Information changed on the form are rewritten. Otherwise the notes are built new."""
         if self.notes_file:
-            return core.set_revisions(self.notes_text, d["revisions"])
+            text = core.apply_case_info(self.notes_text, d)
+            return text.replace("\r\n", "\n").lstrip(chr(0xFEFF))   # as the Text box shows it
         return core.build_casenotes(d)
 
     def update_preview(self, event=None):
         d = self._collect()
-        self.preview_frame.config(text="CaseNotes Preview  (loaded file: only Revisions follows the form)"
+        self.preview_frame.config(text="CaseNotes Preview  (loaded file, with your Case Information changes)"
                                   if self.notes_file else "CaseNotes Preview")
         if not core.ID_RE.search(d.get("name_id", "")):
             text = "Drop or browse for an Rx PDF or a CaseNotes file above to see the preview."
@@ -441,7 +443,7 @@ class App:
         """Fill the form from a CaseNotes file made earlier (by this tool or the old Excel sheet),
         and list the files the designer saved in its working folder."""
         try:
-            text = path.read_text(encoding="utf-8", errors="replace")
+            text, _ = core.read_casenotes(path)
             data = core.parse_casenotes(text)
         except OSError as e:
             messagebox.showerror("Error reading file", str(e))
@@ -451,7 +453,7 @@ class App:
                                    "Couldn't find a Unique ID line in that file.\n"
                                    "Drop a CaseNotes .txt or the Rx .pdf here.")
             return
-        self.notes_file, self.notes_text = path, text.lstrip(chr(0xFEFF))   # drop a leading BOM
+        self.notes_file, self.notes_text = path, text
         self._set_defaults()
         for key, value in data.items():
             self.vars[key].set(value)
@@ -592,7 +594,7 @@ class App:
                                  f"{self.rx_pdf.name} was moved or deleted since you loaded it.")
             return
         base = core.DESKTOP / core.safe_name(core.base_folder_name(d))
-        if (base / core.casenotes_name(d)).exists() and not messagebox.askyesno(
+        if (base / core.casenotes_name(d, working=True)).exists() and not messagebox.askyesno(
                 "CaseNotes already exist",
                 f"{base.name}\n\nalready has CaseNotes.\n"
                 "Replace them with new notes from the form? "
@@ -633,6 +635,22 @@ class App:
                                  + "\n- ".join(missing))
             return
 
+        if self.notes_file:
+            # Compare with the file as it is now: the designer may have edited it since loading.
+            try:
+                changes = core.casenotes_changes(core.read_casenotes(self.notes_file)[0], d)
+            except OSError as e:
+                messagebox.showerror("Error reading file", str(e))
+                return
+            if changes and not messagebox.askokcancel(
+                    "Case Information changed",
+                    "The form differs from the loaded CaseNotes. "
+                    "These changes will be saved to the CaseNotes:\n\n"
+                    + "\n".join(f"- {label}:  {old or '(blank)'}  →  {new or '(blank)'}"
+                                for label, old, new in changes)
+                    + "\n\nContinue?"):
+                return
+
         main = self._main_folder(d)
         if main.exists() and not messagebox.askyesno(
                 "Folder already exists",
@@ -642,15 +660,14 @@ class App:
 
         try:
             # The finished folder's CaseNotes hold the case information only. With a loaded
-            # CaseNotes file they are cut from that file (only Revisions follows the form)
+            # CaseNotes file they are cut from that file, with the form's changes applied,
             # rather than built again, so the designer's edits carry over.
             fresh = None if self.notes_file else core.casenotes_header(core.build_casenotes(d))
             core.create_folder_structure(main, core.patient_from(d["name_id"], d["center"]).uid,
                                          notes=fresh, notes_name=core.casenotes_name(d))
             if self.notes_file:
-                core.write_final_casenotes(self.notes_file, main, core.casenotes_name(d),
-                                           d["revisions"])
-                self.notes_text = core.set_revisions(self.notes_text, d["revisions"])
+                core.write_final_casenotes(self.notes_file, main, core.casenotes_name(d), d)
+                self.notes_text, _ = core.read_casenotes(self.notes_file)
             if rx:
                 core.copy_files([(rx, core.plan_rx_copy(rx, main, d))])
             plan = core.plan_file_copies([(f["src"], f["role"]) for f in self.files], d, main)

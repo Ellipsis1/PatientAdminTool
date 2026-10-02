@@ -159,14 +159,19 @@ def base_folder_name(d):
     return f"{p.init2} {p.name3} {p.uid} {p.center}"
 
 
-def _doc_name(d, kind):
+# In the working folder the CaseNotes and Rx names start with this, so Explorer sorts them
+# above whatever the designer saves there (symbols sort before digits and letters).
+WORKING_PREFIX = "!"
+
+
+def _doc_name(d, kind, working=False):
     p = patient_from(d['name_id'], d['center'])
-    return safe_name(f"{p.uid}_{p.first1}_{p.name3}_{kind}")
+    return (WORKING_PREFIX if working else "") + safe_name(f"{p.uid}_{p.first1}_{p.name3}_{kind}")
 
 
-def casenotes_name(d):
-    """CaseNotes file name, e.g. '1234-QWER_T_EST_CaseNotes.txt'."""
-    return _doc_name(d, "CaseNotes") + ".txt"
+def casenotes_name(d, working=False):
+    """CaseNotes file name, e.g. '1234-QWER_T_EST_CaseNotes.txt' ('!1234-...' in the working folder)."""
+    return _doc_name(d, "CaseNotes", working) + ".txt"
 
 
 # =============================================================================
@@ -232,12 +237,38 @@ _NOTE_FIELDS = {"center": "center", "stl only": "stl_only", "cutback": "cutback"
                 "tooth shade": "tooth_shade", "due by date": "due_date",
                 "surgery": "surgery_date", "rx date": "rx_date", "scan date": "scan_date",
                 "ios or box": "ios_box", "designer": "designer", "revisions": "revisions"}
-_REVISIONS_LINE = re.compile(r"^Revisions:[^\r\n]*", re.MULTILINE)
+_NOTE_LINE = re.compile(r"\s*([^:?]+)[:?](.*)")
+_ARCH_LINE = re.compile(r"(.*?)(?:\s+(Upper|Lower|Double) Split File)?")
+_BOM = chr(0xFEFF)
 
 
-def set_revisions(text, revisions):
-    """CaseNotes text with its Revisions line set to the given count; nothing else changes."""
-    return _REVISIONS_LINE.sub(f"Revisions: {revisions}", text, count=1)
+def read_casenotes(path):
+    """(text, encoding) of a CaseNotes file, with its line endings left as they are.
+
+    Files from this tool are UTF-8; ones from the old Excel sheet are usually cp1252.
+    """
+    raw = Path(path).read_bytes()
+    for enc in ("utf-8", "cp1252"):
+        try:
+            return raw.decode(enc), enc
+        except UnicodeDecodeError:
+            pass
+    return raw.decode("latin-1"), "latin-1"
+
+
+def _header_index(lines):
+    """({label: (line number, value)}, number of header lines) for the lines of a CaseNotes text.
+
+    The header is everything above the first ruled line.
+    """
+    found = {}
+    for i, line in enumerate(lines):
+        if line.startswith("___"):
+            return found, i
+        m = _NOTE_LINE.match(line.lstrip(_BOM))
+        if m:
+            found[m.group(1).strip().lower()] = (i, m.group(2).strip())
+    return found, len(lines)
 
 
 def casenotes_header(text):
@@ -249,10 +280,6 @@ def casenotes_header(text):
     return head.rstrip() + ("\r\n" if "\r\n" in head else "\n")
 
 
-_NOTE_LINE = re.compile(r"\s*([^:?]+)[:?](.*)")
-_ARCH_LINE = re.compile(r"(.*?)(?:\s+(Upper|Lower|Double) Split File)?")
-
-
 def parse_casenotes(text):
     """Form values from a CaseNotes file written by build_casenotes (or the old Excel sheet).
 
@@ -260,13 +287,7 @@ def parse_casenotes(text):
     rebuilt from the form anyway. Returns {} when there is no Unique ID line,
     i.e. the text is not a CaseNotes file.
     """
-    raw = {}
-    for line in text.lstrip(chr(0xFEFF)).splitlines():
-        if line.startswith("___"):
-            break
-        m = _NOTE_LINE.match(line)
-        if m:
-            raw[m.group(1).strip().lower()] = m.group(2).strip()
+    raw = {label: value for label, (_, value) in _header_index(text.splitlines())[0].items()}
     uid = ID_RE.search(raw.get("unique id", ""))
     if not uid:
         return {}
@@ -277,6 +298,66 @@ def parse_casenotes(text):
         out["arch_type"] = arch
     out["split_file"] = split or "No"
     return out
+
+
+def _case_info_edits(text, d):
+    """Header lines of a CaseNotes text that the form disagrees with:
+    [(label, the line as the form would write it)], in CaseNotes order."""
+    old = parse_casenotes(text)
+    if not old:
+        return []
+
+    def same(key):
+        a, b = old.get(key, ""), d.get(key, "")
+        if key.endswith("_date") and parse_date(a) is not None:
+            return parse_date(a) == parse_date(b)     # 6/03/2026 and 06/03/2026 are one date
+        return a == b
+
+    changed = {label for label, key in _NOTE_FIELDS.items() if not same(key)}
+    was, now = patient_from(old["name_id"], ""), patient_from(d["name_id"], "")
+    if (was.init2, was.name3) != (now.init2, now.name3):
+        changed.add("patient name")
+    if was.uid != now.uid:
+        changed.add("unique id")
+    if not (same("arch_type") and same("split_file")):
+        changed.add("arch type")
+    built = build_casenotes(d).splitlines()
+    in_notes = _header_index(text.splitlines())[0]
+    return [(label, built[i]) for label, (i, value) in _header_index(built)[0].items()
+            if label in changed and value != in_notes.get(label, (0, None))[1]]
+
+
+def casenotes_changes(text, d):
+    """Case information on the form that differs from a CaseNotes text, to show the user:
+    [(label, value in the notes, value on the form)]."""
+    found = _header_index(text.splitlines())[0]
+    out = []
+    for label, line in _case_info_edits(text, d):
+        m = _NOTE_LINE.match(line)
+        out.append((m.group(1).strip(), found.get(label, (0, ""))[1], m.group(2).strip()))
+    return out
+
+
+def apply_case_info(text, d):
+    """CaseNotes text with the form's case information written into its header.
+
+    Only lines whose value differs from the form are rewritten; every other line,
+    hand edits included, is kept exactly. A line the notes lack is added above Revisions.
+    """
+    lines = text.splitlines(keepends=True)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    for label, new in _case_info_edits(text, d):
+        found, end = _header_index(lines)
+        if label in found:
+            i = found[label][0]
+            body = lines[i].rstrip("\r\n")
+            lines[i] = (_BOM if body.startswith(_BOM) else "") + new + lines[i][len(body):]
+        else:
+            at = found["revisions"][0] if "revisions" in found else end
+            if at and not lines[at - 1].endswith("\n"):
+                lines[at - 1] += newline
+            lines.insert(at, new + newline)
+    return "".join(lines)
 
 
 # =============================================================================
@@ -498,16 +579,16 @@ def plan_file_copies(items, d, main_folder=None):
     return results
 
 
-def plan_rx_copy(pdf, main_folder, d):
+def plan_rx_copy(pdf, main_folder, d, working=False):
     """Where the Rx PDF will be copied: the patient folder, beside the CaseNotes,
-    renamed like '1234-QWER_T_EST_Rx.pdf'.
+    renamed like '1234-QWER_T_EST_Rx.pdf' ('!1234-...' in the working folder).
 
     Returns a list of destinations like plan_file_copies does. It is empty when
     that exact file is already there (Create was clicked again for the same
     case); a different file with the same name gets _02, _03, ... instead.
     """
     src, main = Path(pdf), Path(main_folder)
-    base, ext = _doc_name(d, "Rx"), src.suffix.lower()
+    base, ext = _doc_name(d, "Rx", working), src.suffix.lower()
     dest, n = main / f"{base}{ext}", 2
     while dest.exists():
         if filecmp.cmp(src, dest, shallow=False):
@@ -614,16 +695,17 @@ def create_folder_structure(main_folder, uid, notes=None, notes_name="CaseNotes.
 def create_initial_folder(base_folder, d, rx_pdf=None):
     """Start a case: the working folder, with fresh CaseNotes and the Rx PDF moved in beside them.
 
-    Both get their standard names. Returns (CaseNotes path, Rx path); the Rx path is
-    None when there is no Rx or that exact file is already in the folder.
+    Both get their standard names with WORKING_PREFIX in front, which keeps them at the
+    top of the folder. Returns (CaseNotes path, Rx path); the Rx path is None when
+    there is no Rx or that exact file is already in the folder.
     """
     base = Path(base_folder)
     base.mkdir(parents=True, exist_ok=True)
-    notes = base / casenotes_name(d)
+    notes = base / casenotes_name(d, working=True)
     notes.write_text(build_casenotes(d), encoding="utf-8")
     rx = None
     if rx_pdf:
-        dests = plan_rx_copy(rx_pdf, base, d)
+        dests = plan_rx_copy(rx_pdf, base, d, working=True)
         if dests:
             rx = Path(shutil.move(str(rx_pdf), dests[0]))
     return notes, rx
@@ -656,30 +738,37 @@ def working_folder_files(notes_path, d):
             continue
         if len(parts) == 1 and name.endswith("casenotes.txt"):
             continue                                    # an older copy of the notes
-        if len(parts) == 1 and f.suffix.lower() == ".pdf" and name.startswith(rx_stem):
+        if (len(parts) == 1 and f.suffix.lower() == ".pdf"
+                and name.removeprefix(WORKING_PREFIX).startswith(rx_stem)):
             rx.append(f)
         else:
             files.append(f)
     return (max(rx, key=lambda f: f.stat().st_mtime) if rx else None), files
 
 
-def write_final_casenotes(src, main_folder, notes_name, revisions):
+def write_final_casenotes(src, main_folder, notes_name, d):
     """Write the finished folder's CaseNotes from a loaded CaseNotes file.
 
-    The new file is that file's case information only (casenotes_header), with the
-    Revisions count from the form; the lines are not rebuilt, so hand edits to them
-    survive. The loaded file stays where it is, complete, and gets the same count.
-    Returns the new file.
+    The new file is that file's case information only (casenotes_header), with any
+    changes made on the form applied (apply_case_info); untouched lines are not
+    rebuilt, so hand edits to them survive. The loaded file stays where it is,
+    complete, and gets the same changes. Returns the new file.
     """
     src, dest = Path(src), Path(main_folder) / notes_name
-    # latin-1 maps every byte to itself, so text we don't touch is kept exactly
-    old = src.read_bytes()
-    text = set_revisions(old.decode("latin-1"), revisions)
+    old, enc = read_casenotes(src)
+    text = apply_case_info(old, d)
+
+    def encode(s):
+        try:
+            return s.encode(enc)
+        except UnicodeEncodeError:      # the form added a character the old encoding lacks
+            return s.encode("utf-8")
+
     in_place = dest.exists() and os.path.samefile(src, dest)
-    if not in_place and text.encode("latin-1") != old:
-        src.write_bytes(text.encode("latin-1"))
+    if not in_place and text != old:
+        src.write_bytes(encode(text))
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(casenotes_header(text).encode("latin-1"))
+    dest.write_bytes(encode(casenotes_header(text)))
     return dest
 
 
