@@ -214,6 +214,8 @@ class RxPdfTests(unittest.TestCase):
 class GuessRoleTests(unittest.TestCase):
     def test_by_extension(self):
         self.assertEqual(core.guess_role("shot 1.PNG"), "SCREENSHOT")
+        self.assertEqual(core.guess_role("export.ZIP"), "KEEP")
+        self.assertEqual(core.guess_role("upper bite.zip", "UAO4"), "KEEP")   # name tokens don't matter
 
     def test_by_name(self):
         self.assertEqual(core.guess_role("upper_jaw.stl"), "MX")
@@ -274,6 +276,21 @@ class PlanAndCopyTests(unittest.TestCase):
         items = [(Path("a.STL"), "MD"), (Path("b.ply"), "MX"), (Path("m.dcm"), "MDL_MX"),
                  (Path("w.dcm"), "WRK_MX"), (Path("s.png"), "SCREENSHOT"), (Path("d.obj"), None)]
         self.assertEqual(core.non_stl_for_stl_folder(items), [Path("b.ply"), Path("m.dcm")])
+
+    def test_zips_not_for_patient(self):
+        ok = ["1234-QWER export.zip", "scan_1234qwer.ZIP", "1234_QWER.zip",     # unique ID
+              "1234.zip", "scan1234_v2.zip", "qwer export.zip", "Export_QWER.zip",  # half the ID
+              "Estrada_Tom.zip", "TomEstrada.zip", "TEstrada.zip", "T EST scans.zip"]  # name
+        stray = ["export.zip", "5678-ASDF.zip", "latest.zip", "Smith_John.zip",
+                 "20261234.zip", "qwerty.zip", "123-QWE.zip"]
+        items = [(Path(n), "KEEP") for n in ok + stray]
+        items += [(Path("export.stl"), "MD"), (Path("unassigned.zip"), None)]
+        self.assertEqual(core.zips_not_for_patient(items, case()), [Path(n) for n in stray])
+
+    def test_zip_keeps_its_name(self):
+        src = self.make("1234-QWER Export.zip")
+        plan = core.plan_file_copies([(src, core.guess_role(src))], case(), self.main)
+        self.assertEqual(plan, [[self.main / "1234-QWER Export.zip"]])
 
     def test_collisions_in_batch_and_on_disk(self):
         existing = self.main / "1234-QWER STL" / "1234-QWER_MD_T_EST_Chicago.stl"

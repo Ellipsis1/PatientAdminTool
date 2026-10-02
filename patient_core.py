@@ -505,6 +505,8 @@ def guess_role(path, arch_type=""):
 
     if ext in IMAGE_EXTS:
         return "SCREENSHOT"
+    if ext == ".zip":
+        return "KEEP"
     if "bite" in tokens or "bite" in stem:
         return "BITE"
 
@@ -545,6 +547,38 @@ def non_stl_for_stl_folder(items):
     """
     return [Path(src) for src, role in items
             if role and STL_DIR in ROLES[role][2] and Path(src).suffix.lower() != ".stl"]
+
+
+def _names_patient(stem, p):
+    """Whether a file name carries the unique ID, either half of it, or the patient's name ('EST', 'TEST')."""
+    squeezed = re.sub(r"[^a-z0-9]", "", stem.lower())
+    uid = re.sub(r"[^a-z0-9]", "", p.uid.lower())
+    if uid and uid in squeezed:
+        return True
+    # Half the ID is enough ('1234' or 'QWER'), unless it is only part of a longer
+    # number or word: '1234' is not in '20261234', nor 'QWER' in 'qwerty'.
+    for half in {uid[:4], uid[-4:]} if len(uid) >= 8 else ():
+        before = r"\d" if half[0].isdigit() else "[a-z]"
+        after = r"\d" if half[-1].isdigit() else "[a-z]"
+        if re.search(rf"(?<!{before}){re.escape(half)}(?!{after})", stem.lower()):
+            return True
+    if not p.name3:
+        return False
+    # Words, split at separators, digits and capitals: 'TomEstrada_scan' -> tom, estrada, scan
+    words = re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+", stem)
+    starts = (p.name3.lower(), (p.first1 + p.name3).lower())
+    return any(w.lower().startswith(starts) for w in words)
+
+
+def zips_not_for_patient(items, d):
+    """The .zip source files whose name has neither the unique ID nor the patient's name.
+
+    A zip keeps its name when copied, so the name is the only sign of whose case it is.
+    items: list of (source_path, role_key or None), as for plan_file_copies.
+    """
+    p = patient_from(d['name_id'], d['center'])
+    return [Path(src) for src, role in items
+            if role and Path(src).suffix.lower() == ".zip" and not _names_patient(Path(src).stem, p)]
 
 
 def plan_file_copies(items, d, main_folder=None):

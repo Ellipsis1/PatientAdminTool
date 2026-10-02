@@ -645,6 +645,14 @@ class App:
                 + "\n- ".join(p.name for p in non_stl)
                 + "\n\nContinue anyway?", icon=messagebox.WARNING):
             return
+        stray_zips = core.zips_not_for_patient(items, d)
+        if stray_zips and not messagebox.askokcancel(
+                "Zip may be for another case",
+                f"The zip file doesn't contain the unique ID or the patient name "
+                f"of {d['name_id'].strip()} in the name, and may not be for this case:\n- "
+                + "\n- ".join(p.name for p in stray_zips)
+                + "\n\nContinue anyway?", icon=messagebox.WARNING):
+            return
 
         if self.notes_file:
             # Compare with the file as it is now: the designer may have edited it since loading.

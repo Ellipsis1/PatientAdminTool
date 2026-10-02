@@ -44,6 +44,7 @@ Desktop\
 - Existing case files are never overwritten. A name that is already taken gets `_02`, `_03`, ... appended.
 - CaseNotes loaded from a file are not rebuilt, so hand edits survive. If the form differs from the file, the changes are listed and you are asked before anything is written.
 - Only STL files belong in the STL folder. If any other file type is headed there, a warning lists the files and asks whether to continue.
+- Zip files are copied into the patient folder under their own name. If a zip's name has neither the unique ID (or its first or last four characters) nor the patient name in it, a warning lists it as possibly belonging to another case and asks whether to continue.
 - Every file needs a role before the folder is created; files the app cannot identify are flagged for you to choose.
 
 ## Running it
