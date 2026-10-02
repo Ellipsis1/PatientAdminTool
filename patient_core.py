@@ -149,9 +149,24 @@ def stl_folder_name(uid):
 
 def folder_name(d):
     """Patient folder name, e.g. '6.11.2026 T. TES 1234-QWER Chicago'."""
-    p = patient_from(d['name_id'], d['center'])
     model_only = " MODEL ONLY" if d.get('arch_type') == "MODEL ONLY" else ""
-    return f"{fmt_date(d.get('rx_date'), '.')} {p.init2} {p.name3} {p.uid} {p.center}{model_only}"
+    return f"{fmt_date(d.get('rx_date'), '.')} {base_folder_name(d)}{model_only}"
+
+
+def base_folder_name(d):
+    """Working folder the designer starts a case in, e.g. 'T. TES 1234-QWER Chicago'."""
+    p = patient_from(d['name_id'], d['center'])
+    return f"{p.init2} {p.name3} {p.uid} {p.center}"
+
+
+def _doc_name(d, kind):
+    p = patient_from(d['name_id'], d['center'])
+    return safe_name(f"{p.uid}_{p.first1}_{p.name3}_{kind}")
+
+
+def casenotes_name(d):
+    """CaseNotes file name, e.g. '1234-QWER_T_EST_CaseNotes.txt'."""
+    return _doc_name(d, "CaseNotes") + ".txt"
 
 
 # =============================================================================
@@ -179,7 +194,7 @@ def build_casenotes(d, today=None):
     out += f"IOS or Box? {d['ios_box']}\n"
     out += f"Designer: {d['designer']}\n"
     out += f"Awaiting Approval Date: {fmt_date(today)}\n"
-    out += "Revisions: 0\n\n_______________________________________\n"
+    out += f"Revisions: {d.get('revisions') or 0}\n\n_______________________________________\n"
 
     if up:
         s = f"MAX STL NAME\n{uid}_MX_{first1}_{name3}_{C7}\n"
@@ -209,6 +224,58 @@ def build_casenotes(d, today=None):
     out += f"Patient Folder Name\n{folder_name(d)}\n"
     out += f"\nSTL Folder Name\n{stl_folder_name(uid)}\n"
     out += f"\nDental System Order ID Input\n{uid}_{first1}_{name3}_{C7}"
+    return out
+
+
+# CaseNotes header label -> form key, for the lines that map straight across
+_NOTE_FIELDS = {"center": "center", "stl only": "stl_only", "cutback": "cutback",
+                "tooth shade": "tooth_shade", "due by date": "due_date",
+                "surgery": "surgery_date", "rx date": "rx_date", "scan date": "scan_date",
+                "ios or box": "ios_box", "designer": "designer", "revisions": "revisions"}
+_REVISIONS_LINE = re.compile(r"^Revisions:[^\r\n]*", re.MULTILINE)
+
+
+def set_revisions(text, revisions):
+    """CaseNotes text with its Revisions line set to the given count; nothing else changes."""
+    return _REVISIONS_LINE.sub(f"Revisions: {revisions}", text, count=1)
+
+
+def casenotes_header(text):
+    """CaseNotes text down to the Revisions line: the case information, without the
+    file-naming examples under the first ruled line. This is what the finished folder gets."""
+    lines = text.splitlines(keepends=True)
+    cut = next((i for i, line in enumerate(lines) if line.startswith("___")), len(lines))
+    head = "".join(lines[:cut])
+    return head.rstrip() + ("\r\n" if "\r\n" in head else "\n")
+
+
+_NOTE_LINE = re.compile(r"\s*([^:?]+)[:?](.*)")
+_ARCH_LINE = re.compile(r"(.*?)(?:\s+(Upper|Lower|Double) Split File)?")
+
+
+def parse_casenotes(text):
+    """Form values from a CaseNotes file written by build_casenotes (or the old Excel sheet).
+
+    Only the header above the first ruled line is read; the names below it are
+    rebuilt from the form anyway. Returns {} when there is no Unique ID line,
+    i.e. the text is not a CaseNotes file.
+    """
+    raw = {}
+    for line in text.lstrip(chr(0xFEFF)).splitlines():
+        if line.startswith("___"):
+            break
+        m = _NOTE_LINE.match(line)
+        if m:
+            raw[m.group(1).strip().lower()] = m.group(2).strip()
+    uid = ID_RE.search(raw.get("unique id", ""))
+    if not uid:
+        return {}
+    out = {key: raw[label] for label, key in _NOTE_FIELDS.items() if raw.get(label)}
+    out["name_id"] = f"{raw.get('patient name', '')} {uid.group(0)}".strip()
+    arch, split = _ARCH_LINE.fullmatch(raw.get("arch type", "")).groups()
+    if arch:
+        out["arch_type"] = arch
+    out["split_file"] = split or "No"
     return out
 
 
@@ -431,19 +498,21 @@ def plan_file_copies(items, d, main_folder=None):
     return results
 
 
-def plan_rx_copy(pdf, main_folder):
-    """Where the Rx PDF will be copied: the patient folder, beside CaseNotes.txt, original name.
+def plan_rx_copy(pdf, main_folder, d):
+    """Where the Rx PDF will be copied: the patient folder, beside the CaseNotes,
+    renamed like '1234-QWER_T_EST_Rx.pdf'.
 
     Returns a list of destinations like plan_file_copies does. It is empty when
     that exact file is already there (Create was clicked again for the same
     case); a different file with the same name gets _02, _03, ... instead.
     """
     src, main = Path(pdf), Path(main_folder)
-    dest, n = main / src.name, 2
+    base, ext = _doc_name(d, "Rx"), src.suffix.lower()
+    dest, n = main / f"{base}{ext}", 2
     while dest.exists():
         if filecmp.cmp(src, dest, shallow=False):
             return []
-        dest, n = main / f"{src.stem}_{n:02d}{src.suffix}", n + 1
+        dest, n = main / f"{base}_{n:02d}{ext}", n + 1
     return [dest]
 
 
@@ -531,15 +600,87 @@ def load_lists():
 # =============================================================================
 # Writing to disk
 # =============================================================================
-def create_folder_structure(main_folder, uid, notes=None):
-    """Create the patient folder and its subfolders. Optionally write CaseNotes.txt."""
+def create_folder_structure(main_folder, uid, notes=None, notes_name="CaseNotes.txt"):
+    """Create the patient folder and its subfolders. Optionally write the CaseNotes file."""
     main = Path(main_folder)
     main.mkdir(parents=True, exist_ok=True)
     for sub in (VIEWER_DIR, SCREENSHOT_DIR, stl_folder_name(uid)):
         (main / sub).mkdir(exist_ok=True)
     if notes is not None:
-        (main / "CaseNotes.txt").write_text(notes, encoding="utf-8")
+        (main / notes_name).write_text(notes, encoding="utf-8")
     return main
+
+
+def create_initial_folder(base_folder, d, rx_pdf=None):
+    """Start a case: the working folder, with fresh CaseNotes and the Rx PDF moved in beside them.
+
+    Both get their standard names. Returns (CaseNotes path, Rx path); the Rx path is
+    None when there is no Rx or that exact file is already in the folder.
+    """
+    base = Path(base_folder)
+    base.mkdir(parents=True, exist_ok=True)
+    notes = base / casenotes_name(d)
+    notes.write_text(build_casenotes(d), encoding="utf-8")
+    rx = None
+    if rx_pdf:
+        dests = plan_rx_copy(rx_pdf, base, d)
+        if dests:
+            rx = Path(shutil.move(str(rx_pdf), dests[0]))
+    return notes, rx
+
+
+_IGNORED_FILES = {"desktop.ini", "thumbs.db"}
+
+
+def working_folder_files(notes_path, d):
+    """What sits in a working folder beside its CaseNotes: (Rx PDF or None, case files).
+
+    The folder is only searched when it is named for this patient (its name contains
+    the unique ID), so CaseNotes dropped from the Desktop or Downloads don't pull in
+    everything around them. Subfolders are searched too, except the ones a finished
+    patient folder has, whose files are already renamed copies.
+    """
+    notes = Path(notes_path)
+    folder = notes.parent
+    uid = patient_from(d['name_id'], d['center']).uid
+    if uid.lower() not in folder.name.lower():
+        return None, []
+    finished = {VIEWER_DIR.lower(), SCREENSHOT_DIR.lower(), stl_folder_name(uid).lower()}
+    rx_stem = _doc_name(d, "Rx").lower()
+    rx, files = [], []
+    for f in sorted(folder.rglob("*")):
+        parts = f.relative_to(folder).parts
+        name = f.name.lower()
+        if (not f.is_file() or f == notes or name in _IGNORED_FILES or name.startswith((".", "~"))
+                or (len(parts) > 1 and parts[0].lower() in finished)):
+            continue
+        if len(parts) == 1 and name.endswith("casenotes.txt"):
+            continue                                    # an older copy of the notes
+        if len(parts) == 1 and f.suffix.lower() == ".pdf" and name.startswith(rx_stem):
+            rx.append(f)
+        else:
+            files.append(f)
+    return (max(rx, key=lambda f: f.stat().st_mtime) if rx else None), files
+
+
+def write_final_casenotes(src, main_folder, notes_name, revisions):
+    """Write the finished folder's CaseNotes from a loaded CaseNotes file.
+
+    The new file is that file's case information only (casenotes_header), with the
+    Revisions count from the form; the lines are not rebuilt, so hand edits to them
+    survive. The loaded file stays where it is, complete, and gets the same count.
+    Returns the new file.
+    """
+    src, dest = Path(src), Path(main_folder) / notes_name
+    # latin-1 maps every byte to itself, so text we don't touch is kept exactly
+    old = src.read_bytes()
+    text = set_revisions(old.decode("latin-1"), revisions)
+    in_place = dest.exists() and os.path.samefile(src, dest)
+    if not in_place and text.encode("latin-1") != old:
+        src.write_bytes(text.encode("latin-1"))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(casenotes_header(text).encode("latin-1"))
+    return dest
 
 
 def copy_files(pairs):

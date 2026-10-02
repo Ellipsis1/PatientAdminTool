@@ -1,12 +1,24 @@
 """
 Patient Folder & Case Notes Creator
 -----------------------------------
+Starting a case:
 1. Drop (or browse for) the Rx PDF. It fills in what it can.
 2. Pick the rest from the dropdowns and fill in the dates.
-3. Drop case files (STLs, DCMs, screenshots, 3D viewer). Each gets a role,
-   which decides its new name and subfolder. Check the "New name" column.
-4. Click "Create Folder + Notes + Files". Files are copied, never moved.
-   The Rx PDF is copied into the patient folder next to CaseNotes.txt.
+3. Click "Create Initial Folder + CaseNotes". A working folder like
+   "T. EST 1234-QWER Chicago" appears on the Desktop holding the CaseNotes
+   and the Rx PDF (moved in), both named with the patient's ID and name.
+   The designer saves models and screenshots there and edits the CaseNotes.
+
+Finishing a case:
+4. Drop the CaseNotes .txt from the working folder. It fills the form
+   (Revisions included) and lists the files saved in that folder. Each file
+   gets a role, which decides its new name and subfolder. Check the
+   "New name" column; more files can be dropped in.
+5. Click "Create Folder + Notes + Files" for the dated patient folder.
+   Case files and the Rx PDF are copied in. It gets a new CaseNotes holding
+   only the case information (no file-naming examples).
+
+Steps 1, 2 and 5 on their own still make everything in one go.
 
 All logic lives in patient_core.py; this file is only the window.
 
@@ -102,6 +114,8 @@ class App:
         self.combos = {}
         self.files = []  # each: {"src": Path, "role": role key or None}
         self.rx_pdf = None  # the loaded Rx PDF, copied into the patient folder on Create
+        self.notes_file = None  # a loaded CaseNotes file: the patient folder's notes come from it
+        self.notes_text = ""
         self.settings = core.load_settings()
         # Load lists.json before building the form so the dropdowns start current.
         self.lists_source, self.lists_version = core.load_lists()
@@ -122,10 +136,10 @@ class App:
         bar = tk.Menu(self.root)
         m = tk.Menu(bar, tearoff=False)
         m.add_command(label="New Case", command=self.new_case)
-        m.add_command(label="Open Rx PDF...", command=self.browse_pdf)
+        m.add_command(label="Open Rx PDF or Case Notes...", command=self.browse_pdf)
         m.add_command(label="Add Case Files...", command=self.browse_files)
         m.add_separator()
-        m.add_command(label="Save Case Notes As...", command=self.save_notes_only)
+        m.add_command(label="Create Initial Folder + CaseNotes", command=self.create_initial)
         m.add_separator()
         m.add_command(label="Reload Lists", command=self.reload_lists)
         m.add_separator()
@@ -189,6 +203,7 @@ class App:
         date_entry(10, "Rx Date (mm/dd/yyyy):", "rx_date")
         date_entry(11, "Due by Date (mm/dd/yyyy):", "due_date")
         date_entry(12, "Surgery Date (mm/dd/yyyy):", "surgery_date")
+        entry(13, "Revisions:", "revisions")
 
         tk.Button(form, text="Today", font=("Arial", 8),
                   command=lambda: self._set_today("scan_date")).grid(row=9, column=3, sticky="w", padx=(4, 0))
@@ -197,13 +212,14 @@ class App:
 
         self.folder_label = tk.Label(form, text="", font=("Consolas", 9), fg="#1565C0",
                                      wraplength=330, justify="left")
-        self.folder_label.grid(row=13, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.folder_label.grid(row=14, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
         self._set_defaults()
 
     def _build_preview(self, parent):
-        right = tk.LabelFrame(parent, text="CaseNotes.txt Preview",
+        right = tk.LabelFrame(parent, text="CaseNotes Preview",
                               font=("Arial", 10, "bold"), padx=6, pady=6)
+        self.preview_frame = right
         right.pack(side="left", fill="both", expand=True, padx=(10, 0))
         self.preview = tk.Text(right, wrap="none", font=("Consolas", 9), height=20)
         ys = tk.Scrollbar(right, command=self.preview.yview)
@@ -259,7 +275,7 @@ class App:
         tk.Button(bar, text="Create Folder + Notes + Files", command=self.create_all,
                   bg="#4CAF50", fg="white", font=("Arial", 11, "bold"),
                   padx=14, pady=6).pack(side="right", padx=4)
-        tk.Button(bar, text="Save Case Notes Only (.txt)", command=self.save_notes_only,
+        tk.Button(bar, text="Create Initial Folder + CaseNotes", command=self.create_initial,
                   bg="#2196F3", fg="white", font=("Arial", 10, "bold"),
                   padx=10, pady=6).pack(side="right", padx=4)
         tk.Button(bar, text="New Case", command=self.new_case,
@@ -286,11 +302,12 @@ class App:
     # ------------------------------------------------------------------ helpers
     @staticmethod
     def _pdf_zone_text():
+        what = "the Rx PDF or a previous CaseNotes .txt"
         if not core.PDF_AVAILABLE:
-            return "PDF reading unavailable: run  pip install pdfplumber"
+            what = "a previous CaseNotes .txt  (PDF reading unavailable: run  pip install pdfplumber)"
         if DND_AVAILABLE:
-            return "Drag & drop the Rx PDF here  (or click to browse)"
-        return "Click here to browse for the Rx PDF"
+            return f"Drag & drop {what} here  (or click to browse)"
+        return f"Click here to browse for {what}"
 
     @staticmethod
     def _file_zone_text():
@@ -306,6 +323,7 @@ class App:
             v.set("")
         self.vars["split_file"].set("No")
         self.vars["cutback"].set("No")
+        self.vars["revisions"].set("0")
         self.vars["designer"].set(designer)
 
     def _remember(self, d):
@@ -331,6 +349,7 @@ class App:
         d = {k: v.get().strip() for k, v in self.vars.items()}
         for k in ("split_file", "cutback"):
             d[k] = d[k] or "No"
+        d["revisions"] = d["revisions"] or "0"
         return d
 
     @staticmethod
@@ -355,6 +374,8 @@ class App:
         for key in DATE_FIELDS:
             if d.get(key) and core.parse_date(d[key]) is None:
                 out.append(f"{key.replace('_', ' ').title()} is not a valid date (mm/dd/yyyy)")
+        if not d.get("revisions", "0").isdigit():
+            out.append("Revisions must be a whole number")
         return out
 
     @staticmethod
@@ -363,14 +384,23 @@ class App:
         return [Path(p) for p in root.tk.splitlist(data)]
 
     # ------------------------------------------------------------------ preview
+    def _notes_text(self, d):
+        """A loaded CaseNotes file keeps its own text (hand edits and all) apart from the
+        Revisions count, which follows the form. Otherwise the notes are built from the form."""
+        if self.notes_file:
+            return core.set_revisions(self.notes_text, d["revisions"])
+        return core.build_casenotes(d)
+
     def update_preview(self, event=None):
         d = self._collect()
+        self.preview_frame.config(text="CaseNotes Preview  (loaded file: only Revisions follows the form)"
+                                  if self.notes_file else "CaseNotes Preview")
         if not core.ID_RE.search(d.get("name_id", "")):
-            text = "Drop or browse for an Rx PDF above to see the CaseNotes preview."
+            text = "Drop or browse for an Rx PDF or a CaseNotes file above to see the preview."
             self.folder_label.config(text="")
         else:
             try:
-                text = core.build_casenotes(d)
+                text = self._notes_text(d)
             except Exception as e:
                 text = f"(Preview error: {e})"
             problems = self._problems(d)
@@ -383,20 +413,56 @@ class App:
         self.preview.insert("1.0", text)
         self.refresh_files()
 
-    # ------------------------------------------------------------------ Rx PDF
+    # ------------------------------------------------------------------ Rx PDF / CaseNotes
     def browse_pdf(self):
-        path = filedialog.askopenfilename(title="Select Rx PDF",
-                                          filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")])
+        path = filedialog.askopenfilename(
+            title="Select Rx PDF or CaseNotes",
+            filetypes=[("Rx PDF or CaseNotes", ("*.pdf", "*.txt")), ("All files", "*.*")])
         if path:
-            self.load_pdf(Path(path))
+            self.load_source(Path(path))
 
     def on_pdf_drop(self, event):
-        pdfs = [p for p in self._split_drop(self.root, event.data) if p.suffix.lower() == ".pdf"]
-        if not pdfs:
-            messagebox.showwarning("Not a PDF", "Please drop the Rx .pdf file here.\n"
+        paths = [p for p in self._split_drop(self.root, event.data)
+                 if p.suffix.lower() in (".pdf", ".txt")]
+        if not paths:
+            messagebox.showwarning("Not a PDF or CaseNotes",
+                                   "Please drop the Rx .pdf or a CaseNotes .txt file here.\n"
                                                 "Case files go in the green box below.")
             return
-        self.load_pdf(pdfs[0])
+        self.load_source(paths[0])
+
+    def load_source(self, path):
+        if path.suffix.lower() == ".txt":
+            self.load_casenotes(path)
+        else:
+            self.load_pdf(path)
+
+    def load_casenotes(self, path):
+        """Fill the form from a CaseNotes file made earlier (by this tool or the old Excel sheet),
+        and list the files the designer saved in its working folder."""
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+            data = core.parse_casenotes(text)
+        except OSError as e:
+            messagebox.showerror("Error reading file", str(e))
+            return
+        if not data:
+            messagebox.showwarning("Not a CaseNotes file",
+                                   "Couldn't find a Unique ID line in that file.\n"
+                                   "Drop a CaseNotes .txt or the Rx .pdf here.")
+            return
+        self.notes_file, self.notes_text = path, text.lstrip(chr(0xFEFF))   # drop a leading BOM
+        self._set_defaults()
+        for key, value in data.items():
+            self.vars[key].set(value)
+        # An Rx loaded earlier may belong to a different patient: use the working folder's own.
+        self.rx_pdf, found = core.working_folder_files(path, self._collect())
+        if found:
+            self.files.clear()
+            self.add_files(found)
+        extra = f" and {len(found)} file(s) from its folder" if found else ""
+        self.pdf_zone.config(text=f"Loaded: {path.name}{extra}   (click or drop to load a different file)")
+        self.update_preview()
 
     def load_pdf(self, path):
         if not core.PDF_AVAILABLE:
@@ -410,7 +476,8 @@ class App:
             messagebox.showerror("Error reading PDF", str(e))
             return
         self.rx_pdf = path
-        self.pdf_zone.config(text=f"Loaded: {path.name}   (click or drop to load a different PDF)")
+        self.notes_file = None   # the form is refilled from the Rx, so the notes are built fresh
+        self.pdf_zone.config(text=f"Loaded: {path.name}   (click or drop to load a different file)")
         if not data:
             messagebox.showwarning("Nothing found",
                                    "Couldn't read any case details from that PDF.\n"
@@ -513,23 +580,36 @@ class App:
         self.refresh_files()
 
     # ------------------------------------------------------------------ actions
-    def save_notes_only(self):
+    def create_initial(self):
+        """Start a case: a working folder on the Desktop with the CaseNotes and the Rx PDF."""
         d = self._collect()
         problems = self._problems(d)
         if problems:
             messagebox.showerror("Missing info", "Please provide:\n- " + "\n- ".join(problems))
             return
-        path = filedialog.asksaveasfilename(title="Save Case Notes", defaultextension=".txt",
-                                            initialfile="CaseNotes.txt",
-                                            filetypes=[("Text files", "*.txt")])
-        if not path:
+        if self.rx_pdf and not self.rx_pdf.exists():
+            messagebox.showerror("Rx PDF not found",
+                                 f"{self.rx_pdf.name} was moved or deleted since you loaded it.")
+            return
+        base = core.DESKTOP / core.safe_name(core.base_folder_name(d))
+        if (base / core.casenotes_name(d)).exists() and not messagebox.askyesno(
+                "CaseNotes already exist",
+                f"{base.name}\n\nalready has CaseNotes.\n"
+                "Replace them with new notes from the form? "
+                "Revisions and edits made in the existing file will be lost."):
             return
         try:
-            Path(path).write_text(core.build_casenotes(d), encoding="utf-8")
-            self._remember(d)
-            messagebox.showinfo("Saved", f"Case notes saved to:\n{path}")
+            _, rx = core.create_initial_folder(base, d, self.rx_pdf)
         except Exception as e:
-            messagebox.showerror("Error", str(e))
+            messagebox.showerror("Error", f"Something went wrong:\n{e}")
+            return
+        if rx:
+            self.rx_pdf = rx    # it lives in the working folder now
+        self.notes_file = None
+        self._remember(d)
+        contents = "the CaseNotes and the Rx PDF (moved in)" if rx else "the CaseNotes"
+        messagebox.showinfo("Done", f"Working folder ready with {contents}:\n\n{base}")
+        self.update_preview()
 
     def create_all(self):
         d = self._collect()
@@ -543,10 +623,10 @@ class App:
                                  "Pick a role for these files (or remove them):\n- "
                                  + "\n- ".join(unassigned))
             return
-        # The Rx PDF goes in beside CaseNotes.txt, unless it's already in the file list.
+        # The Rx PDF goes in beside the CaseNotes, unless it's already in the file list.
         rx = self.rx_pdf if self.rx_pdf not in [f["src"] for f in self.files] else None
-        missing = [p.name for p in [f["src"] for f in self.files] + ([rx] if rx else [])
-                   if not p.exists()]
+        missing = [p.name for p in [f["src"] for f in self.files] + [rx, self.notes_file]
+                   if p and not p.exists()]
         if missing:
             messagebox.showerror("Files not found",
                                  "These files were moved or deleted since you added them:\n- "
@@ -557,14 +637,22 @@ class App:
         if main.exists() and not messagebox.askyesno(
                 "Folder already exists",
                 f"{main.name}\n\nalready exists on the Desktop.\n"
-                "Update its CaseNotes.txt and add the files? Existing files are not overwritten."):
+                "Update its CaseNotes and add the files? Existing files are not overwritten."):
             return
 
         try:
+            # The finished folder's CaseNotes hold the case information only. With a loaded
+            # CaseNotes file they are cut from that file (only Revisions follows the form)
+            # rather than built again, so the designer's edits carry over.
+            fresh = None if self.notes_file else core.casenotes_header(core.build_casenotes(d))
             core.create_folder_structure(main, core.patient_from(d["name_id"], d["center"]).uid,
-                                         notes=core.build_casenotes(d))
+                                         notes=fresh, notes_name=core.casenotes_name(d))
+            if self.notes_file:
+                core.write_final_casenotes(self.notes_file, main, core.casenotes_name(d),
+                                           d["revisions"])
+                self.notes_text = core.set_revisions(self.notes_text, d["revisions"])
             if rx:
-                core.copy_files([(rx, core.plan_rx_copy(rx, main))])
+                core.copy_files([(rx, core.plan_rx_copy(rx, main, d))])
             plan = core.plan_file_copies([(f["src"], f["role"]) for f in self.files], d, main)
             copied = core.copy_files(list(zip([f["src"] for f in self.files], plan)))
         except Exception as e:
@@ -573,7 +661,9 @@ class App:
             return
 
         self._remember(d)
-        contents = "CaseNotes.txt, the Rx PDF" if rx else "CaseNotes.txt"
+        contents = "the CaseNotes (case information only)"
+        if rx:
+            contents += ", the Rx PDF"
         messagebox.showinfo("Done", f"Folder ready with {contents} and {len(copied)} file(s):\n\n{main}")
         self.clear_files()
 
@@ -583,6 +673,7 @@ class App:
         self._set_defaults()
         self.files.clear()
         self.rx_pdf = None
+        self.notes_file = None
         self.pdf_zone.config(text=self._pdf_zone_text())
         self.update_preview()
 

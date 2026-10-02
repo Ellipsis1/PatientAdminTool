@@ -45,6 +45,7 @@ class NamingTests(unittest.TestCase):
     def test_folder_name(self):
         self.assertEqual(core.folder_name(case()), "6.3.2026 T. EST 1234-QWER Chicago")
         self.assertTrue(core.folder_name(case(arch_type="MODEL ONLY")).endswith(" MODEL ONLY"))
+        self.assertEqual(core.base_folder_name(case()), "T. EST 1234-QWER Chicago")
 
     def test_casenotes_uses_given_today(self):
         notes = core.build_casenotes(case(), today=date(2026, 9, 29))
@@ -58,6 +59,41 @@ class NamingTests(unittest.TestCase):
             notes = core.build_casenotes(case(arch_type=arch))
             self.assertEqual("MAX STL NAME" in notes, has_max, arch)
             self.assertEqual("MAND STL NAME" in notes, has_mand, arch)
+
+
+class ParseCaseNotesTests(unittest.TestCase):
+    def test_round_trip(self):
+        for d in (case(), case(surgery_date="6/20/2026", cutback="Yes"),
+                  case(arch_type="Double - MxCD-LAO4", split_file="Double"),
+                  case(arch_type="Double CD"), case(arch_type="MODEL ONLY", split_file="Upper"),
+                  case(center="Atlanta - Decatur", tooth_shade="A3.5", ios_box="Box")):
+            # blank fields are left out, as the form starts empty
+            back = dict.fromkeys(d, "") | core.parse_casenotes(core.build_casenotes(d))
+            self.assertEqual(core.build_casenotes(back), core.build_casenotes(d))
+            self.assertEqual(back["arch_type"], d["arch_type"])
+            self.assertEqual(back["split_file"], d["split_file"])
+            self.assertEqual(core.folder_name(back), core.folder_name(d))
+
+    def test_fields(self):
+        back = core.parse_casenotes(chr(0xFEFF) + core.build_casenotes(case()).replace("\n", "\r\n"))
+        self.assertEqual(back["name_id"], "T. EST 1234-QWER")
+        self.assertEqual(back["designer"], "Byron")
+        self.assertEqual(back["ios_box"], "IOS")
+        self.assertEqual(back["due_date"], "6/11/2026")
+        self.assertNotIn("surgery_date", back)            # blank in the notes: left for the form
+
+    def test_revisions(self):
+        self.assertIn("\nRevisions: 0\n", core.build_casenotes(case()))
+        notes = core.build_casenotes(case(revisions="2"))
+        self.assertIn("\nRevisions: 2\n", notes)
+        self.assertEqual(core.parse_casenotes(notes)["revisions"], "2")
+        edited = notes.replace("\n", "\r\n") + "\r\nhand edit, Revisions: unrelated"
+        self.assertEqual(core.set_revisions(edited, "3"),
+                         edited.replace("Revisions: 2\r\n", "Revisions: 3\r\n", 1))
+
+    def test_other_text_is_rejected(self):
+        self.assertEqual(core.parse_casenotes("Shopping list:\n- milk\n"), {})
+        self.assertEqual(core.parse_casenotes(""), {})
 
 
 class ArchFromTreatmentTests(unittest.TestCase):
@@ -212,15 +248,75 @@ class PlanAndCopyTests(unittest.TestCase):
             self.assertTrue((self.main / sub).is_dir())
 
     def test_rx_pdf_goes_beside_casenotes(self):
-        rx = self.make("Lab Rx.pdf", "rx")
-        core.create_folder_structure(self.main, "1234-QWER", notes="hello")
-        plan = core.plan_rx_copy(rx, self.main)
-        self.assertEqual(plan, [self.main / "Lab Rx.pdf"])
+        rx = self.make("Lab Rx.PDF", "rx")
+        self.assertEqual(core.casenotes_name(case()), "1234-QWER_T_EST_CaseNotes.txt")
+        core.create_folder_structure(self.main, "1234-QWER", notes="hello",
+                                     notes_name=core.casenotes_name(case()))
+        self.assertEqual((self.main / "1234-QWER_T_EST_CaseNotes.txt").read_text(), "hello")
+        plan = core.plan_rx_copy(rx, self.main, case())
+        self.assertEqual(plan, [self.main / "1234-QWER_T_EST_Rx.pdf"])
         core.copy_files([(rx, plan)])
         self.assertTrue(rx.exists())                              # copied, not moved
-        self.assertEqual(core.plan_rx_copy(rx, self.main), [])    # same file again: nothing to do
+        self.assertEqual(core.plan_rx_copy(rx, self.main, case()), [])   # same file again: nothing to do
         rx.write_text("revised rx")
-        self.assertEqual(core.plan_rx_copy(rx, self.main), [self.main / "Lab Rx_02.pdf"])
+        self.assertEqual(core.plan_rx_copy(rx, self.main, case()),
+                         [self.main / "1234-QWER_T_EST_Rx_02.pdf"])
+
+    def test_final_casenotes_are_the_case_information_only(self):
+        full = core.build_casenotes(case(), today=date(2026, 9, 29))
+        head = core.casenotes_header(full)
+        self.assertTrue(head.startswith("Center: Chicago\nPatient Name: T. EST\n"))
+        self.assertTrue(head.endswith("Awaiting Approval Date: 9/29/2026\nRevisions: 0\n"))
+        self.assertEqual(core.casenotes_header(head), head)       # already trimmed: unchanged
+        self.assertEqual(core.parse_casenotes(head), core.parse_casenotes(full))
+
+    def test_final_casenotes_from_a_loaded_file(self):
+        name = core.casenotes_name(case())
+        # an old Excel-era file: cp1252, Windows line endings, edited by hand
+        raw = ("Unique ID: 1234-QWER\r\nDesigner: Zoë (was Byron)\r\nRevisions: 1\r\n\r\n"
+               "____________\r\nMAX STL NAME\r\ncafé note\r\n").encode("cp1252")
+        working = self.src / "CaseNotes.txt"
+        working.write_bytes(raw)
+        dest = core.write_final_casenotes(working, self.main, name, "2")
+        self.assertEqual(dest, self.main / name)
+        self.assertEqual(dest.read_bytes(), "Unique ID: 1234-QWER\r\nDesigner: Zoë (was Byron)\r\n"
+                                            "Revisions: 2\r\n".encode("cp1252"))
+        # the working copy stays, complete, with the new count
+        self.assertEqual(working.read_bytes(), raw.replace(b"Revisions: 1", b"Revisions: 2"))
+        # dropping the finished folder's own notes back in just updates them
+        core.write_final_casenotes(dest, self.main, name, "3")
+        self.assertEqual(dest.read_bytes(), "Unique ID: 1234-QWER\r\nDesigner: Zoë (was Byron)\r\n"
+                                            "Revisions: 3\r\n".encode("cp1252"))
+
+    def test_initial_folder_gets_notes_and_the_rx_moved_in(self):
+        base = self.root / "Desktop" / core.base_folder_name(case())
+        rx = self.make("Lab Rx.pdf", "rx")
+        notes, moved = core.create_initial_folder(base, case(), rx)
+        self.assertEqual(notes, base / "1234-QWER_T_EST_CaseNotes.txt")
+        self.assertEqual(notes.read_text(), core.build_casenotes(case()))
+        self.assertEqual(moved, base / "1234-QWER_T_EST_Rx.pdf")
+        self.assertEqual(moved.read_text(), "rx")
+        self.assertFalse(rx.exists())                             # moved, not copied
+        self.assertEqual(sorted(p.name for p in base.iterdir()), [notes.name, moved.name])
+        self.assertEqual(core.create_initial_folder(base, case(), moved), (notes, None))   # again
+        self.assertTrue(moved.exists())
+        self.assertEqual(core.create_initial_folder(base, case()), (notes, None))          # no Rx
+
+    def test_working_folder_files(self):
+        base = self.root / "Desktop" / core.base_folder_name(case())
+        notes, rx = core.create_initial_folder(base, case(), self.make("Lab Rx.pdf", "rx"))
+        for rel in ("upper.stl", "shots/front.png", "CaseNotes.txt", "desktop.ini", "~lock.tmp",
+                    "3D Viewer/1234-QWER_MX_T_EST.dcm", "1234-QWER STL/old.stl", "other.pdf"):
+            (base / rel).parent.mkdir(exist_ok=True)
+            (base / rel).write_text("x")
+        found_rx, files = core.working_folder_files(notes, case())
+        self.assertEqual(found_rx, rx)
+        self.assertEqual([f.relative_to(base).as_posix() for f in files],
+                         ["other.pdf", "shots/front.png", "upper.stl"])
+        # CaseNotes sitting somewhere not named for the patient: leave the neighbours alone
+        loose = self.make("1234-QWER_T_EST_CaseNotes.txt")
+        self.make("someone elses.stl")
+        self.assertEqual(core.working_folder_files(loose, case()), (None, []))
 
     def test_safe_name_strips_windows_chars(self):
         self.assertEqual(core.safe_name('a<b>:c"d?e*'), "abcde")
