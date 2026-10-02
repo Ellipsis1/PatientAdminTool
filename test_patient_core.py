@@ -225,6 +225,7 @@ class GuessRoleTests(unittest.TestCase):
         self.assertEqual(core.guess_role("upper model.stl"), "MDL_MX")
         self.assertEqual(core.guess_role("lower working.stl"), "WRK_MD")
         self.assertEqual(core.guess_role("upper.dcm"), "MX_DCM")
+        self.assertEqual(core.guess_role("upper working.dcm"), "WRK_MX")
 
     def test_falls_back_on_arch(self):
         self.assertEqual(core.guess_role("scan.stl", "LAO4"), "MD")
@@ -268,6 +269,11 @@ class PlanAndCopyTests(unittest.TestCase):
             ["notes.pdf"],
             None,
         ])
+
+    def test_non_stl_for_stl_folder(self):
+        items = [(Path("a.STL"), "MD"), (Path("b.ply"), "MX"), (Path("m.dcm"), "MDL_MX"),
+                 (Path("w.dcm"), "WRK_MX"), (Path("s.png"), "SCREENSHOT"), (Path("d.obj"), None)]
+        self.assertEqual(core.non_stl_for_stl_folder(items), [Path("b.ply"), Path("m.dcm")])
 
     def test_collisions_in_batch_and_on_disk(self):
         existing = self.main / "1234-QWER STL" / "1234-QWER_MD_T_EST_Chicago.stl"

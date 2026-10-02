@@ -635,6 +635,17 @@ class App:
                                  + "\n- ".join(missing))
             return
 
+        items = [(f["src"], f["role"]) for f in self.files]
+        stl_dir = core.stl_folder_name(core.patient_from(d["name_id"], d["center"]).uid)
+        non_stl = core.non_stl_for_stl_folder(items)
+        if non_stl and not messagebox.askokcancel(
+                "Not STL files",
+                f"Only STL files belong in the {stl_dir} folder, "
+                "but these files are going there:\n- "
+                + "\n- ".join(p.name for p in non_stl)
+                + "\n\nContinue anyway?", icon=messagebox.WARNING):
+            return
+
         if self.notes_file:
             # Compare with the file as it is now: the designer may have edited it since loading.
             try:
@@ -670,7 +681,7 @@ class App:
                 self.notes_text, _ = core.read_casenotes(self.notes_file)
             if rx:
                 core.copy_files([(rx, core.plan_rx_copy(rx, main, d))])
-            plan = core.plan_file_copies([(f["src"], f["role"]) for f in self.files], d, main)
+            plan = core.plan_file_copies(items, d, main)
             copied = core.copy_files(list(zip([f["src"] for f in self.files], plan)))
         except Exception as e:
             messagebox.showerror("Error", f"Something went wrong:\n{e}\n\n"

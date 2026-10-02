@@ -517,8 +517,6 @@ def guess_role(path, arch_type=""):
         return None
     side = "MX" if upper else "MD"
 
-    if ext == ".dcm":
-        return f"{side}_DCM"
     if "cutback" in stem:
         return f"{side}_CUTBACK"
     if "base" in tokens:
@@ -531,11 +529,22 @@ def guess_role(path, arch_type=""):
         return f"MDL_{side}"
     if ext in {".stl", ".ply", ".obj"}:
         return side
+    if ext == ".dcm":
+        return f"{side}_DCM"
     return None
 
 
 def _dest_dirs(role, uid):
     return [stl_folder_name(uid) if sub == STL_DIR else sub for sub in ROLES[role][2]]
+
+
+def non_stl_for_stl_folder(items):
+    """The source files headed for the STL folder that are not .stl files.
+
+    items: list of (source_path, role_key or None), as for plan_file_copies.
+    """
+    return [Path(src) for src, role in items
+            if role and STL_DIR in ROLES[role][2] and Path(src).suffix.lower() != ".stl"]
 
 
 def plan_file_copies(items, d, main_folder=None):
